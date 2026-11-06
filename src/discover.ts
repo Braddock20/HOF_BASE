@@ -204,56 +204,241 @@ discover.post("/seen", async c => {
 });
 
 // Uploads go into the private B2 bucket. Only an admin-approved submission is made public.
+
+// Direct Discover uploads are published immediately after successful storage.
+// B2 remains private; public delivery happens only through the HOF media proxy.
 discover.post("/uploads", async c => {
-  if(!b2Configured(c.env))return fail(c,503,"MEDIA_STORAGE_NOT_CONFIGURED","Private media storage is not configured.");
-  const form=await c.req.formData().catch(()=>null);
-  const file=form?.get("file");
-  const thumbnail=form?.get("thumbnail");
-  const reason=String(form?.get("reason")||"");
-  const submitterRef=String(form?.get("submitterRef")||"").slice(0,120)||null;
-  const width=Math.min(10000,Math.max(0,Number(form?.get("width")||0)))||null;
-  const height=Math.min(10000,Math.max(0,Number(form?.get("height")||0)))||null;
-  if(!(file instanceof File)||!["image/jpeg","image/png","image/webp","image/gif","video/mp4","video/webm"].includes(file.type))
-    return fail(c,400,"INVALID_MEDIA","Upload a supported image or MP4/WebM video.");
-  if(file.size>8*1024*1024)return fail(c,413,"FILE_TOO_LARGE","This upload endpoint supports files up to 8 MB.");
-  if(reason.trim().length<5||reason.length>1000)return fail(c,400,"VALIDATION_ERROR","A submission reason is required.");
-  const ext=file.type.split("/")[1].replace("jpeg","jpg");
-  const key=`uploads/pending/${crypto.randomUUID()}.${ext}`;
-  let phase="b2_upload";
-  try{
-    const stored=await uploadPrivateB2Object(c.env,key,file);
-    phase="media_record_insert";
-    const rows=await db(c.env).query(`INSERT INTO hof_media_assets(object_key,b2_file_id,mime_type,file_size,width,height,checksum_sha1,status,visibility)
-      VALUES($1,$2,$3,$4,$5,$6,$7,'ready','private') RETURNING id`,[key,stored.fileId,stored.mimeType,stored.size,width,height,stored.sha1]);
-    const mediaId=rows[0].id;
-    let thumbnailId:string|null=null;
-    if(thumbnail instanceof File&&thumbnail.type.startsWith("image/")&&thumbnail.size>0&&thumbnail.size<=2*1024*1024){
-      const thumbExt=thumbnail.type.split("/")[1].replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"img";
-      const thumbKey=`uploads/pending-thumbnails/${crypto.randomUUID()}.${thumbExt}`;
-      phase="thumbnail_b2_upload";
-      const thumbStored=await uploadPrivateB2Object(c.env,thumbKey,thumbnail);
-      phase="thumbnail_record_insert";
-      const thumbRows=await db(c.env).query<any>(`INSERT INTO hof_media_assets(object_key,b2_file_id,mime_type,file_size,checksum_sha1,status,visibility)
-        VALUES($1,$2,$3,$4,$5,'ready','private') RETURNING id`,[thumbKey,thumbStored.fileId,thumbStored.mimeType,thumbStored.size,thumbStored.sha1]);
-      thumbnailId=thumbRows[0].id;
+  if (!b2Configured(c.env)) {
+    return fail(c, 503, "MEDIA_STORAGE_NOT_CONFIGURED", "Private media storage is not configured.");
+  }
+
+  const form = await c.req.formData().catch(() => null);
+  if (!form) return fail(c, 400, "INVALID_FORM", "A valid multipart upload is required.");
+
+  const file = form.get("file");
+  const thumbnail = form.get("thumbnail");
+  const reason = String(form.get("reason") || "").trim();
+  const caption = String(form.get("caption") || "").trim().slice(0, 3000) || null;
+
+  const width = Math.min(10000, Math.max(0, Number(form.get("width") || 0))) || null;
+  const height = Math.min(10000, Math.max(0, Number(form.get("height") || 0))) || null;
+
+  const durationValue = Number(form.get("durationSeconds") || 0);
+  const durationSeconds =
+    Number.isFinite(durationValue) && durationValue > 0 && durationValue <= 3600
+      ? durationValue
+      : null;
+
+  const supportedMedia = [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "video/mp4",
+    "video/webm"
+  ];
+
+  const supportedThumbnails = [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif"
+  ];
+
+  if (!(file instanceof File) || !supportedMedia.includes(file.type)) {
+    return fail(c, 400, "INVALID_MEDIA", "Upload a supported image or MP4/WebM video.");
+  }
+
+  if (file.size <= 0 || file.size > 8 * 1024 * 1024) {
+    return fail(c, 413, "FILE_TOO_LARGE", "Uploads must be between 1 byte and 8 MB.");
+  }
+
+  if (reason.length < 5 || reason.length > 1000) {
+    return fail(c, 400, "VALIDATION_ERROR", "A submission reason is required.");
+  }
+
+  const validThumbnail =
+    thumbnail instanceof File &&
+    supportedThumbnails.includes(thumbnail.type) &&
+    thumbnail.size > 0 &&
+    thumbnail.size <= 2 * 1024 * 1024;
+
+  const mediaType = file.type.startsWith("video/") ? "video" : "image";
+  const mediaExt = file.type.split("/")[1].replace("jpeg", "jpg");
+  const mediaKey = `uploads/discover/${crypto.randomUUID()}.${mediaExt}`;
+
+  let phase = "b2_upload";
+
+  try {
+    // 1. Upload original media privately.
+    const stored = await uploadPrivateB2Object(c.env, mediaKey, file);
+
+    phase = "media_record_insert";
+
+    const mediaRows = await db(c.env).query<any>(`
+      INSERT INTO hof_media_assets(
+        object_key, b2_file_id, mime_type, file_size,
+        width, height, checksum_sha1, status, visibility
+      )
+      VALUES($1,$2,$3,$4,$5,$6,$7,'ready','private')
+      RETURNING id
+    `, [
+      mediaKey,
+      stored.fileId,
+      stored.mimeType,
+      stored.size,
+      width,
+      height,
+      stored.sha1
+    ]);
+
+    const mediaId = mediaRows[0].id;
+    let thumbnailId: string | null = null;
+
+    // 2. Upload optional thumbnail privately.
+    if (validThumbnail && thumbnail instanceof File) {
+      const thumbExt = thumbnail.type.split("/")[1].replace("jpeg", "jpg");
+      const thumbKey = `uploads/discover-thumbnails/${crypto.randomUUID()}.${thumbExt}`;
+
+      phase = "thumbnail_b2_upload";
+
+      const thumbStored = await uploadPrivateB2Object(c.env, thumbKey, thumbnail);
+
+      phase = "thumbnail_record_insert";
+
+      const thumbRows = await db(c.env).query<any>(`
+        INSERT INTO hof_media_assets(
+          object_key, b2_file_id, mime_type, file_size,
+          checksum_sha1, status, visibility
+        )
+        VALUES($1,$2,$3,$4,$5,'ready','private')
+        RETURNING id
+      `, [
+        thumbKey,
+        thumbStored.fileId,
+        thumbStored.mimeType,
+        thumbStored.size,
+        thumbStored.sha1
+      ]);
+
+      thumbnailId = thumbRows[0].id;
     }
-    phase="submission_record_insert";
-    const sub=await db(c.env).query(`INSERT INTO hof_discover_submissions(source,media_type,reason,media_asset_id,thumbnail_media_id,submitter_ref,width,height)
-      VALUES('hof',$1,$2,$3,$4,$5,$6,$7) RETURNING id,status`,[file.type.startsWith("video/")?"video":"image",reason,mediaId,thumbnailId,submitterRef,width,height]);
-    return ok(c,{submissionId:sub[0].id,status:sub[0].status,mediaId},201);
-  }catch(error){
-    const message=error instanceof Error?error.message:String(error);
-    const safeMessage=message
-      .replace(/https?:\/\/[^\s]+/gi,"[url redacted]")
-      .replace(/(authorization|token|application.?key|password)\s*[:=]\s*[^,;\s]+/gi,"$1=[redacted]")
-      .slice(0,240);
-    const b2Status=message.match(/\((\d{3})\)/)?.[1]||null;
-    console.error(JSON.stringify({event:"discover_upload_failed",requestId:c.get("requestId"),phase,errorName:error instanceof Error?error.name:"UnknownError",errorMessage:safeMessage,b2Status}));
-    return fail(c,503,"UPLOAD_FAILED","Private media upload failed. Please retry.");
+
+    // 3. Publish media and create the public post.
+    // Both changes happen inside one PostgreSQL statement.
+    phase = "publish_post";
+
+    const assetIds = thumbnailId
+      ? [mediaId, thumbnailId]
+      : [mediaId];
+
+    const expectedAssets = assetIds.length;
+
+    const published = await db(c.env).query<any>(`
+      WITH made_public AS (
+        UPDATE hof_media_assets
+        SET visibility = 'public'
+        WHERE id = ANY($1::uuid[])
+          AND status = 'ready'
+        RETURNING id
+      ),
+      new_post AS (
+        INSERT INTO hof_discover_posts(
+          source,
+          creator_name,
+          creator_handle,
+          caption,
+          media_type,
+          media_asset_id,
+          thumbnail_media_id,
+          duration_seconds,
+          width,
+          height,
+          source_payload,
+          status,
+          visibility,
+          published_at
+        )
+        SELECT
+          'hof',
+          'HOF Community',
+          NULL,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          jsonb_build_object('submissionReason', $9),
+          'approved',
+          'public',
+          now()
+        FROM (
+          SELECT count(*)::int AS total FROM made_public
+        ) assets
+        WHERE assets.total = $10
+        RETURNING id, published_at
+      )
+      SELECT id, published_at AS "publishedAt"
+      FROM new_post
+    `, [
+      assetIds,
+      caption,
+      mediaType,
+      mediaId,
+      thumbnailId,
+      durationSeconds,
+      width,
+      height,
+      reason,
+      expectedAssets
+    ]);
+
+    if (!published.length) {
+      throw new Error("Media publication did not complete.");
+    }
+
+    const origin = new URL(c.req.url).origin;
+
+    // 4. Return stable HOF URLs, never temporary B2 URLs.
+    return ok(c, {
+      postId: published[0].id,
+      status: "approved",
+      visibility: "public",
+      publishedAt: published[0].publishedAt,
+      mediaId,
+      mediaUrl: `${origin}/api/media/${mediaId}`,
+      thumbnailMediaId: thumbnailId,
+      thumbnailUrl: thumbnailId
+        ? `${origin}/api/media/${thumbnailId}`
+        : mediaType === "image"
+          ? `${origin}/api/media/${mediaId}`
+          : null
+    }, 201);
+
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    const safeMessage = message
+      .replace(/https?:\/\/[^\s]+/gi, "[url redacted]")
+      .replace(/(authorization|token|application.?key|password)\s*[:=]\s*[^,;\s]+/gi, "$1=[redacted]")
+      .slice(0, 240);
+
+    const b2Status = message.match(/\((\d{3})\)/)?.[1] || null;
+
+    console.error(JSON.stringify({
+      event: "discover_upload_failed",
+      requestId: c.get("requestId"),
+      phase,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: safeMessage,
+      b2Status
+    }));
+
+    return fail(c, 503, "UPLOAD_FAILED", "Upload or publication failed. Please retry.");
   }
 });
-
-discover.get("/media-config", c=>ok(c,{storage:"private-b2",delivery:"stable-hof-proxy",uploadMaxBytes:8*1024*1024}));
 
 // Stable URL proxy: the private B2 authorization token never reaches clients.
 export const media = new Hono<E>();
