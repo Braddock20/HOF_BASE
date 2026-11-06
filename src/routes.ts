@@ -26,8 +26,21 @@ api.get("/health/db", async c => {
 api.get("/health/tiktok", async c => {
   if (!c.env.TIKTOK_SCRAPER_BASE_URL) return ok(c, { configured: false, healthy: false });
   try {
-    const r = await fetch(`${c.env.TIKTOK_SCRAPER_BASE_URL.replace(/\/+$/, "")}/api/health`, { signal: AbortSignal.timeout(8000) });
-    return ok(c, { configured: true, healthy: r.ok, status: r.status });
+    const base = c.env.TIKTOK_SCRAPER_BASE_URL.replace(/\/+$/, "");
+const profilePath = c.env.TIKTOK_PROFILE_PATH || "/api/profile";
+
+const url = new URL(base + profilePath);
+url.searchParams.set("handle", "silvanus_mn");
+
+const r = await fetch(url.toString(), {
+  signal: AbortSignal.timeout(15000)
+});
+
+return ok(c, {
+  configured: true,
+  healthy: r.ok,
+  status: r.status
+});
   } catch { return ok(c, { configured: true, healthy: false }); }
 });
 api.get("/version", c => ok(c, { name: "hof-api", version: "1.1.0", build: "discover-feed-private-b2" }));
