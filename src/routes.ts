@@ -4,6 +4,7 @@ import type { Env, AppVariables } from "./types";
 import { db } from "./db";
 import { fail, ok, requiredString, slugify } from "./http";
 import { requireAdmin, requirePermission } from "./auth";
+import { discover as discoverRoutes, discoverAdmin, media as mediaRoutes } from "./discover";
 
 type E = { Bindings: Env; Variables: AppVariables };
 export const api = new Hono<E>();
@@ -29,7 +30,10 @@ api.get("/health/tiktok", async c => {
     return ok(c, { configured: true, healthy: r.ok, status: r.status });
   } catch { return ok(c, { configured: true, healthy: false }); }
 });
-api.get("/version", c => ok(c, { name: "hof-api", version: "1.0.0", build: "initial" }));
+api.get("/version", c => ok(c, { name: "hof-api", version: "1.1.0", build: "discover-feed-private-b2" }));
+api.route("/discover", discoverRoutes);
+api.route("/media", mediaRoutes);
+api.route("/admin/discover", discoverAdmin);
 
 api.get("/profiles", async c => {
   const { limit, offset } = pagination(c);
@@ -130,8 +134,8 @@ api.get("/platforms", c => ok(c, [{ id: "tiktok", name: "TikTok", discovery: tru
 
 // User-submitted nominations and reports are intentionally deferred until a
 // first-party student identity/abuse-control design is implemented.
-api.post("/nominations", c => fail(c, 501, "NOT_CONFIGURED", "Student nominations are not enabled in this API-only release."));
-api.post("/reports", c => fail(c, 501, "NOT_CONFIGURED", "Public reporting is not enabled in this API-only release."));
+api.post("/nominations", c => fail(c, 400, "USE_CREATOR_REQUESTS", "Use POST /api/discover/creator-requests to suggest a creator."));
+api.post("/reports", c => fail(c, 400, "USE_DISCOVER_REPORTS", "Use POST /api/discover/reports to report a Discover post."));
 
 // Protected admin API
 const admin = new Hono<E>();
@@ -219,6 +223,62 @@ for (const [action,status,permission] of [
   ["block","blocked","profile.block"],["unblock","active","profile.unblock"],
   ["remove","removed","profile.remove"],["restore","active","profile.restore"]
 ] as const) admin.post(`/profiles/:id/${action}`,requirePermission(permission),c=>moderation(c,action,status));
+
+admin.get("/categories",requirePermission("category.manage"),async c=>{
+  try{return ok(c,await db(c.env).query("SELECT id,name,slug,description,is_active AS \"isActive\",display_order AS \"displayOrder\" FROM hof_categories ORDER BY display_order,name"));}
+  catch{return fail(c,503,"DATABASE_UNAVAILABLE","Admin categories unavailable.");}
+});
+admin.post("/categories",requirePermission("category.manage"),async c=>{
+  const b=await c.req.json().catch(()=>null);
+  const p=z.object({name:z.string().min(2).max(80),description:z.string().max(500).optional(),displayOrder:z.number().int().min(0).max(10000).default(0)}).safeParse(b);
+  if(!p.success)return fail(c,400,"VALIDATION_ERROR","Category details are invalid.");
+  try{
+    const rows=await db(c.env).query(`INSERT INTO hof_categories(name,slug,description,display_order)
+      VALUES($1,$2,$3,$4) RETURNING id,name,slug,description,is_active AS "isActive",display_order AS "displayOrder"`,
+      [p.data.name,slugify(p.data.name),p.data.description||null,p.data.displayOrder]);
+    await db(c.env).query(`INSERT INTO hof_audit_logs(actor_subject,action,target_type,target_id,request_id)
+      VALUES('admin-api-key','category.create','category',$1,$2)`,[rows[0].id,c.get("requestId")]);
+    return ok(c,rows[0],201);
+  }catch{return fail(c,409,"CONFLICT","Category slug already exists or category could not be created.");}
+});
+admin.patch("/categories/:id",requirePermission("category.manage"),async c=>{
+  const b=await c.req.json().catch(()=>null);
+  const p=z.object({name:z.string().min(2).max(80).optional(),description:z.string().max(500).nullable().optional(),isActive:z.boolean().optional(),displayOrder:z.number().int().min(0).max(10000).optional()}).safeParse(b);
+  if(!p.success||!Object.keys(p.data||{}).length)return fail(c,400,"VALIDATION_ERROR","Category update is invalid.");
+  try{
+    const rows=await db(c.env).query(`UPDATE hof_categories SET name=COALESCE($2,name),slug=CASE WHEN $2::text IS NULL THEN slug ELSE $3 END,
+      description=CASE WHEN $4::boolean THEN $5 ELSE description END,is_active=COALESCE($6,is_active),
+      display_order=COALESCE($7,display_order) WHERE id=$1 RETURNING id,name,slug,description,is_active AS "isActive",display_order AS "displayOrder"`,
+      [c.req.param("id"),p.data.name||null,p.data.name?slugify(p.data.name):null,p.data.description!==undefined,p.data.description??null,p.data.isActive??null,p.data.displayOrder??null]);
+    if(!rows.length)return fail(c,404,"NOT_FOUND","Category not found.");
+    return ok(c,rows[0]);
+  }catch{return fail(c,409,"CONFLICT","Category update failed.");}
+});
+admin.post("/profiles/:id/categories",requirePermission("category.manage"),async c=>{
+  const b=await c.req.json().catch(()=>null);
+  const p=z.object({categoryId:z.string().uuid()}).safeParse(b);
+  if(!p.success)return fail(c,400,"VALIDATION_ERROR","A valid categoryId is required.");
+  try{
+    const rows=await db(c.env).query(`INSERT INTO hof_profile_categories(profile_id,category_id)
+      SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM hof_profiles WHERE id=$1)
+      AND EXISTS(SELECT 1 FROM hof_categories WHERE id=$2 AND is_active)
+      ON CONFLICT DO NOTHING RETURNING profile_id,category_id`,[c.req.param("id"),p.data.categoryId]);
+    if(!rows.length)return fail(c,409,"CONFLICT","Profile/category is invalid or already assigned.");
+    await db(c.env).query(`INSERT INTO hof_audit_logs(actor_subject,action,target_type,target_id,request_id)
+      VALUES('admin-api-key','profile.category.assign','profile',$1,$2)`,[c.req.param("id"),c.get("requestId")]);
+    return ok(c,rows[0],201);
+  }catch{return fail(c,503,"DATABASE_UNAVAILABLE","Category assignment failed.");}
+});
+
+admin.delete("/profiles/:id/categories/:categoryId",requirePermission("category.manage"),async c=>{
+  try{
+    const rows=await db(c.env).query("DELETE FROM hof_profile_categories WHERE profile_id=$1 AND category_id=$2 RETURNING profile_id,category_id",[c.req.param("id"),c.req.param("categoryId")]);
+    if(!rows.length)return fail(c,404,"NOT_FOUND","Profile category assignment not found.");
+    await db(c.env).query(`INSERT INTO hof_audit_logs(actor_subject,action,target_type,target_id,request_id)
+      VALUES('admin-api-key','profile.category.remove','profile',$1,$2)`,[c.req.param("id"),c.get("requestId")]);
+    return ok(c,{removed:true});
+  }catch{return fail(c,503,"DATABASE_UNAVAILABLE","Category removal failed.");}
+});
 
 admin.get("/ranks",requirePermission("rank.view"),async c=>{
   try{return ok(c,await db(c.env).query("SELECT * FROM hof_ranks ORDER BY display_order,name"));}
