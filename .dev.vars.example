@@ -1,0 +1,11 @@
+APP_ENV=development
+DATABASE_URL=postgresql://USER:PASSWORD@HOST/DATABASE?sslmode=require
+
+# Generate at least 32 random bytes. Never commit the real key.
+ADMIN_API_KEY=replace-with-a-long-random-secret-at-least-32-characters
+
+TIKTOK_SCRAPER_BASE_URL=https://YOUR-SCRAPER-WORKER.workers.dev
+TIKTOK_SCRAPER_API_KEY=
+
+RATE_LIMIT_ENABLED=true
+LOG_LEVEL=debug
