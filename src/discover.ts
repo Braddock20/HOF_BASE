@@ -370,7 +370,7 @@ discover.post("/uploads", async c => {
           $6,
           $7,
           $8,
-          jsonb_build_object('submissionReason', $9),
+          jsonb_build_object('submissionReason', $9::text),
           'approved',
           'public',
           now()
