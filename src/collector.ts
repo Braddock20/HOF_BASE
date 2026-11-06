@@ -3,149 +3,369 @@ import { db } from "./db";
 import { discoverTikTok, normalizeTikTok } from "./tiktok";
 import { b2Configured, uploadPrivateB2Object } from "./b2";
 
-const n = (v: unknown): number | null => {
-  if (v === null || v === undefined || v === "") return null;
-  const x = Number(v); return Number.isSafeInteger(x) && x >= 0 ? x : null;
+type SocialAccount = {
+  id: string;
+  username: string;
+  platformUserId: string | null;
+  displayName: string | null;
+  oldVideoCount: number | string | null;
+  lastPostSyncAt: string | null;
 };
-const first = (o: any, keys: string[]) => { for (const k of keys) if (o?.[k] !== undefined && o[k] !== null) return o[k]; return null; };
 
-async function cacheCover(env: Env, url: string, videoId: string): Promise<string|null> {
-  if(!b2Configured(env))return null;
-  try{
-    const parsed=new URL(url);
-    if(parsed.protocol!=="https:"||!/(^|\.)tiktokcdn[^.]*\./i.test(parsed.hostname))return null;
-    const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
-    if(!r.ok)return null;
-    const type=(r.headers.get("content-type")||"").split(";")[0];
-    const blob=await r.blob();
-    if(!type.startsWith("image/")||blob.size===0||blob.size>5*1024*1024)return null;
-    const ext=type.split("/")[1].replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"img";
-    const key=`tiktok/thumbnails/${videoId}.${ext}`;
-    const file=new File([blob],`${videoId}.${ext}`,{type});
-    const stored=await uploadPrivateB2Object(env,key,file);
-    const rows=await db(env).query<any>(`INSERT INTO hof_media_assets(object_key,b2_file_id,mime_type,file_size,checksum_sha1,status,visibility)
-      VALUES($1,$2,$3,$4,$5,'ready','public') ON CONFLICT(object_key) DO UPDATE SET b2_file_id=EXCLUDED.b2_file_id,
-      mime_type=EXCLUDED.mime_type,file_size=EXCLUDED.file_size,checksum_sha1=EXCLUDED.checksum_sha1,status='ready',visibility='public'
-      RETURNING id`,[key,stored.fileId,stored.mimeType,stored.size,stored.sha1]);
-    return rows[0].id;
-  }catch{return null;}
+const first = (value: any, keys: string[]) => {
+  for (const key of keys) if (value?.[key] !== undefined && value[key] !== null) return value[key];
+  return null;
+};
+
+function nonNegativeInteger(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-async function pullPosts(env: Env, username: string, socialAccountId: string) {
-  if (!env.TIKTOK_SCRAPER_BASE_URL || !env.TIKTOK_POSTS_PATH) throw new Error("TIKTOK_POSTS_PATH is not configured");
-  const url = new URL(env.TIKTOK_POSTS_PATH, env.TIKTOK_SCRAPER_BASE_URL);
-  url.searchParams.set("handle", username);
+function nonNegativeDecimal(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, 86400) : null;
+}
+
+function normalizedHandle(value: unknown): string {
+  return String(value ?? "").trim().replace(/^@/, "").toLowerCase();
+}
+
+function safeTikTokPostUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || !["tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"].includes(host)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function safeCoverUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 4096) return null;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const allowed = ["tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "tiktokcdn-in.com", "tiktokcdn.net", "tiktokv.com"];
+    if (url.protocol !== "https:" || !allowed.some(domain => host === domain || host.endsWith(`.${domain}`))) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseHashtags(value: unknown): string[] {
+  const source = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[,,\s]+/) : [];
+  return [...new Set(source.map(item => String(item).trim().replace(/^#/, "").replace(/[^\p{L}\p{N}_]/gu, "").slice(0, 100)).filter(Boolean))].slice(0, 100);
+}
+
+function metricValues(video: any) {
+  return {
+    likes: nonNegativeInteger(first(video, ["likes", "digg_count"])),
+    comments: nonNegativeInteger(first(video, ["comments", "comment_count"])),
+    shares: nonNegativeInteger(first(video, ["shares", "share_count"])),
+    saves: nonNegativeInteger(first(video, ["saves", "collect_count"])),
+    plays: nonNegativeInteger(first(video, ["plays", "play_count", "view_count"])),
+    reposts: nonNegativeInteger(first(video, ["reposts", "repost_count"]))
+  };
+}
+
+function hasAnyMetric(metrics: ReturnType<typeof metricValues>): boolean {
+  return Object.values(metrics).some(value => value !== null);
+}
+
+async function cacheCover(env: Env, coverUrl: string, videoId: string): Promise<string | null> {
+  if (!b2Configured(env)) return null;
+  const url = safeCoverUrl(coverUrl);
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "error" });
+    if (!response.ok) return null;
+    const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const allowedTypes: Record<string, string> = {
+      "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"
+    };
+    const extension = allowedTypes[mimeType];
+    if (!extension) return null;
+    const blob = await response.blob();
+    if (blob.size === 0 || blob.size > 5 * 1024 * 1024) return null;
+    const safeId = videoId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 160);
+    const objectKey = `tiktok/thumbnails/${safeId}.${extension}`;
+    const file = new File([blob], `${safeId}.${extension}`, { type: mimeType });
+    const stored = await uploadPrivateB2Object(env, objectKey, file);
+    const rows = await db(env).query<{ id: string }>(`INSERT INTO hof_media_assets
+      (object_key,b2_file_id,mime_type,file_size,checksum_sha1,status,visibility)
+      VALUES($1,$2,$3,$4,$5,'ready','public')
+      ON CONFLICT(object_key) DO UPDATE SET b2_file_id=EXCLUDED.b2_file_id,
+        mime_type=EXCLUDED.mime_type,file_size=EXCLUDED.file_size,checksum_sha1=EXCLUDED.checksum_sha1,
+        status='ready',visibility='public',deleted_at=NULL
+      RETURNING id`, [objectKey, stored.fileId, stored.mimeType, stored.size, stored.sha1]);
+    return rows[0]?.id ?? null;
+  } catch {
+    // A cover-cache failure must not prevent importing the source post.
+    return null;
+  }
+}
+
+function parsePublishedAt(video: any): string | null {
+  const raw = first(video, ["create_time", "createTime"]);
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 4_102_444_800) return null;
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+async function pullPosts(env: Env, account: SocialAccount) {
+  if (!env.TIKTOK_SCRAPER_BASE_URL || !env.TIKTOK_POSTS_PATH) throw new Error("TikTok posts endpoint is not configured");
+  const base = new URL(env.TIKTOK_SCRAPER_BASE_URL);
+  if (base.protocol !== "https:") throw new Error("TikTok scraper URL must use HTTPS");
+  const url = new URL(env.TIKTOK_POSTS_PATH, `${base.toString().replace(/\/+$/, "")}/`);
+  url.searchParams.set("handle", account.username.replace(/^@/, ""));
   const headers = new Headers({ Accept: "application/json" });
   if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
-  const response = await fetch(url,{headers,signal:AbortSignal.timeout(25000)});
-  if (!response.ok) throw new Error(`Posts provider returned ${response.status}`);
-  const raw=await response.json() as any;
-  const root=raw?.data && typeof raw.data==="object" ? raw.data : raw;
-  const videos=Array.isArray(root?.videos)?root.videos:Array.isArray(raw?.videos)?raw.videos:[];
-  const q=db(env);
-  let inserted=0,updated=0;
-  for(const v of videos){
-    const id=String(first(v,["video_id","id"])||"");
-    const sourceUrl=String(first(v,["source_url","url"])||"");
-    if(!id||!sourceUrl||String(v.status||"ok").toLowerCase()!=="ok"||String(v.is_ad).toLowerCase()==="true")continue;
-    const tombstone=await q.query("SELECT 1 FROM hof_deleted_source_posts WHERE source='tiktok' AND source_post_id=$1",[id]);
-    if(tombstone.length)continue;
-    const create=Number(first(v,["create_time","createTime"]));
-    const published=Number.isFinite(create)&&create>0?new Date(create*1000).toISOString():null;
-    const likes=n(v.likes),comments=n(v.comments),shares=n(v.shares),saves=n(v.saves),plays=n(v.plays),reposts=n(v.reposts);
-    const hashtags=String(v.hashtags||"").split(",").map((x:string)=>x.trim().replace(/^#/,"")).filter(Boolean);
-    const coverUrl=String(first(v,["cover_url"])||"");
-    const prior=await q.query<any>("SELECT thumbnail_media_id AS id FROM hof_discover_posts WHERE source='tiktok' AND source_post_id=$1",[id]);
-    const thumbnailMediaId=prior[0]?.id || (coverUrl?await cacheCover(env,coverUrl,id):null);
-    const result=await q.query<any>(`INSERT INTO hof_discover_posts(source,source_post_id,source_url,creator_social_account_id,
-      creator_name,creator_handle,caption,hashtags,media_type,external_thumbnail_url,thumbnail_media_id,duration_seconds,width,height,published_at,
-      likes,comments,shares,saves,plays,reposts,source_payload,status,visibility)
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(25_000), redirect: "error" });
+  if (response.status === 429) throw new Error("TikTok posts provider is rate limited");
+  if (!response.ok) throw new Error(`TikTok posts provider returned ${response.status}`);
+  const raw = await response.json() as any;
+  const root = raw?.data && typeof raw.data === "object" ? raw.data : raw;
+  const videos = Array.isArray(root?.videos) ? root.videos : Array.isArray(raw?.videos) ? raw.videos : null;
+  if (!videos) throw new Error("TikTok posts provider returned an invalid response");
+
+  const query = db(env);
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+  let snapshots = 0;
+
+  for (const video of videos) {
+    const sourcePostId = String(first(video, ["video_id", "id"]) ?? "").trim();
+    const sourceUrl = safeTikTokPostUrl(first(video, ["source_url", "url"]));
+    const status = String(video?.status ?? "ok").toLowerCase();
+    const isAd = String(video?.is_ad ?? "false").toLowerCase() === "true" || video?.is_ad === 1;
+    if (!sourcePostId || sourcePostId.length > 200 || !sourceUrl || status !== "ok" || isAd) {
+      skipped++;
+      continue;
+    }
+
+    // The posts endpoint is queried for one handle, but we still verify each
+    // returned video's author before attaching it to an HOF creator.
+    const authorHandle = normalizedHandle(first(video, ["author_handle", "author_username", "handle"]));
+    const authorIdValue = first(video, ["author_id", "author_user_id", "author_uid"]);
+    const authorId = authorIdValue === null ? null : String(authorIdValue);
+    const expectedHandle = normalizedHandle(account.username);
+    if ((!authorHandle || authorHandle !== expectedHandle) && (!authorId || !account.platformUserId || authorId !== account.platformUserId)) {
+      skipped++;
+      continue;
+    }
+    if (authorId && account.platformUserId && authorId !== account.platformUserId) {
+      skipped++;
+      continue;
+    }
+
+    const tombstone = await query.query("SELECT 1 FROM hof_deleted_source_posts WHERE source='tiktok' AND source_post_id=$1", [sourcePostId]);
+    if (tombstone.length) {
+      skipped++;
+      continue;
+    }
+
+    const metrics = metricValues(video);
+    const hashtags = parseHashtags(video.hashtags);
+    const caption = typeof video.caption === "string" ? video.caption.slice(0, 5000) : null;
+    const coverUrl = safeCoverUrl(first(video, ["cover_url", "origin_cover", "dynamic_cover"]));
+    const existing = await query.query<{ thumbnailMediaId: string | null; creatorSocialAccountId: string | null }>(
+      `SELECT thumbnail_media_id AS "thumbnailMediaId",creator_social_account_id AS "creatorSocialAccountId"
+       FROM hof_discover_posts WHERE source='tiktok' AND source_post_id=$1`, [sourcePostId]);
+    if (existing[0]?.creatorSocialAccountId && existing[0].creatorSocialAccountId !== account.id) {
+      skipped++;
+      continue;
+    }
+    const thumbnailMediaId = existing[0]?.thumbnailMediaId || (coverUrl ? await cacheCover(env, coverUrl, sourcePostId) : null);
+    const publishedAt = parsePublishedAt(video);
+    const duration = nonNegativeDecimal(first(video, ["duration_seconds", "duration"]));
+    const width = nonNegativeInteger(video.width);
+    const height = nonNegativeInteger(video.height);
+    const result = await query.query<{ id: string; inserted: boolean }>(`INSERT INTO hof_discover_posts(
+        source,source_post_id,source_url,creator_social_account_id,creator_name,creator_handle,caption,hashtags,
+        media_type,external_thumbnail_url,thumbnail_media_id,duration_seconds,width,height,published_at,
+        likes,comments,shares,saves,plays,reposts,source_payload,status,visibility)
       VALUES('tiktok',$1,$2,$3,$4,$5,$6,$7,'video',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,'approved','public')
       ON CONFLICT(source,source_post_id) DO UPDATE SET
-      likes=COALESCE(EXCLUDED.likes,hof_discover_posts.likes),comments=COALESCE(EXCLUDED.comments,hof_discover_posts.comments),shares=COALESCE(EXCLUDED.shares,hof_discover_posts.shares),saves=COALESCE(EXCLUDED.saves,hof_discover_posts.saves),
-      plays=COALESCE(EXCLUDED.plays,hof_discover_posts.plays),reposts=COALESCE(EXCLUDED.reposts,hof_discover_posts.reposts),
-      thumbnail_media_id=COALESCE(EXCLUDED.thumbnail_media_id,hof_discover_posts.thumbnail_media_id),
-      source_payload=EXCLUDED.source_payload,updated_at=now()
-      RETURNING id,(xmax=0) AS inserted`,
-      [id,sourceUrl,socialAccountId,first(v,["author_nickname","author_handle"]),first(v,["author_handle"])||username,
-       v.caption||null,hashtags,coverUrl,thumbnailMediaId,n(v.duration_seconds),n(v.width),n(v.height),published,
-       likes,comments,shares,saves,plays,reposts,JSON.stringify(v)]);
-    if(result.length){
-      if(result[0].inserted)inserted++;else updated++;
-      await q.query(`INSERT INTO hof_post_metric_snapshots(post_id,likes,comments,shares,saves,plays,reposts)
-        VALUES($1,$2,$3,$4,$5,$6,$7)`,[result[0].id,likes,comments,shares,saves,plays,reposts]);
+        creator_social_account_id=COALESCE(hof_discover_posts.creator_social_account_id,EXCLUDED.creator_social_account_id),
+        source_url=COALESCE(EXCLUDED.source_url,hof_discover_posts.source_url),
+        creator_name=COALESCE(hof_discover_posts.creator_name,EXCLUDED.creator_name),
+        creator_handle=COALESCE(hof_discover_posts.creator_handle,EXCLUDED.creator_handle),
+        caption=COALESCE(EXCLUDED.caption,hof_discover_posts.caption),
+        hashtags=CASE WHEN cardinality(EXCLUDED.hashtags)>0 THEN EXCLUDED.hashtags ELSE hof_discover_posts.hashtags END,
+        external_thumbnail_url=COALESCE(EXCLUDED.external_thumbnail_url,hof_discover_posts.external_thumbnail_url),
+        thumbnail_media_id=COALESCE(hof_discover_posts.thumbnail_media_id,EXCLUDED.thumbnail_media_id),
+        duration_seconds=COALESCE(EXCLUDED.duration_seconds,hof_discover_posts.duration_seconds),
+        width=COALESCE(EXCLUDED.width,hof_discover_posts.width),height=COALESCE(EXCLUDED.height,hof_discover_posts.height),
+        published_at=COALESCE(hof_discover_posts.published_at,EXCLUDED.published_at),
+        likes=COALESCE(EXCLUDED.likes,hof_discover_posts.likes),comments=COALESCE(EXCLUDED.comments,hof_discover_posts.comments),
+        shares=COALESCE(EXCLUDED.shares,hof_discover_posts.shares),saves=COALESCE(EXCLUDED.saves,hof_discover_posts.saves),
+        plays=COALESCE(EXCLUDED.plays,hof_discover_posts.plays),reposts=COALESCE(EXCLUDED.reposts,hof_discover_posts.reposts),
+        source_payload=EXCLUDED.source_payload,updated_at=now()
+      WHERE hof_discover_posts.creator_social_account_id IS NULL
+         OR hof_discover_posts.creator_social_account_id=EXCLUDED.creator_social_account_id
+      RETURNING id,(xmax=0) AS inserted`, [
+        sourcePostId, sourceUrl, account.id, account.displayName || first(video, ["author_nickname"]) || account.username,
+        account.username, caption, hashtags, coverUrl, thumbnailMediaId, duration, width, height, publishedAt,
+        metrics.likes, metrics.comments, metrics.shares, metrics.saves, metrics.plays, metrics.reposts, JSON.stringify(video)
+      ]);
+
+    if (!result.length) {
+      skipped++;
+      continue;
+    }
+    if (result[0].inserted) inserted++; else updated++;
+    if (hasAnyMetric(metrics)) {
+      await query.query(`INSERT INTO hof_post_metric_snapshots(post_id,likes,comments,shares,saves,plays,reposts)
+        VALUES($1,$2,$3,$4,$5,$6,$7)`, [result[0].id, metrics.likes, metrics.comments, metrics.shares, metrics.saves, metrics.plays, metrics.reposts]);
+      snapshots++;
     }
   }
-  return {inserted,updated,received:videos.length};
+  return { inserted, updated, skipped, snapshots, received: videos.length };
 }
 
-/** Scheduled work is deliberately bounded: refresh metadata for a small slice,
- * enqueue changed accounts, then process at most one slow posts pull per tick. */
+async function batchProfiles(env: Env, accounts: SocialAccount[]): Promise<Map<string, ReturnType<typeof normalizeTikTok>>> {
+  const result = new Map<string, ReturnType<typeof normalizeTikTok>>();
+  if (!env.TIKTOK_BATCH_PROFILE_PATH || !env.TIKTOK_SCRAPER_BASE_URL || accounts.length === 0) return result;
+  try {
+    const base = new URL(env.TIKTOK_SCRAPER_BASE_URL);
+    if (base.protocol !== "https:") return result;
+    const url = new URL(env.TIKTOK_BATCH_PROFILE_PATH, `${base.toString().replace(/\/+$/, "")}/`);
+    const headers = new Headers({ Accept: "application/json", "Content-Type": "application/json" });
+    if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
+    const response = await fetch(url, {
+      method: "POST", headers, body: JSON.stringify({ handles: accounts.map(account => account.username) }),
+      signal: AbortSignal.timeout(20_000), redirect: "error"
+    });
+    if (!response.ok) return result;
+    const payload = await response.json() as any;
+    const list = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data :
+      Array.isArray(payload?.profiles) ? payload.profiles : Array.isArray(payload?.users) ? payload.users : [];
+    for (const item of list) {
+      const handle = normalizedHandle(first(item, ["handle", "username", "unique_id"]));
+      if (handle) result.set(handle, normalizeTikTok(item, handle));
+    }
+  } catch {
+    // Fall back to the known single-profile endpoint for each account.
+  }
+  return result;
+}
+
+async function refreshProfile(env: Env, account: SocialAccount, q: ReturnType<typeof db>, batch?: Map<string, ReturnType<typeof normalizeTikTok>>) {
+  const metadata = batch?.get(normalizedHandle(account.username)) || await discoverTikTok(env, account.username);
+  if (metadata.providerStatus !== "ok" && metadata.providerStatus !== "partial") {
+    throw new Error(`TikTok profile status: ${metadata.providerStatus}`);
+  }
+  const requestedHandle = normalizedHandle(account.username);
+  if (normalizedHandle(metadata.username) !== requestedHandle) {
+    throw new Error("TikTok profile response handle did not match the requested account");
+  }
+  if (account.platformUserId && metadata.platformUserId && account.platformUserId !== metadata.platformUserId) {
+    throw new Error("TikTok profile identity changed; manual review required");
+  }
+
+  await q.query(`UPDATE hof_social_accounts SET
+      platform_user_id=COALESCE(platform_user_id,$2),platform_secondary_id=COALESCE($3,platform_secondary_id),
+      username=$4,profile_url=$5,display_name=COALESCE($6,display_name),bio=COALESCE($7,bio),
+      avatar_url_temporary=COALESCE($8,avatar_url_temporary),is_private=COALESCE($9,is_private),
+      platform_verified=COALESCE($10,platform_verified),followers=COALESCE($11,followers),
+      following=COALESCE($12,following),video_count=COALESCE($13,video_count),total_likes=COALESCE($14,total_likes),
+      metrics_availability=$15::jsonb,last_synced_at=now(),provider_status=$16,provider_message=$17,updated_at=now()
+    WHERE id=$1`, [
+      account.id, metadata.platformUserId, metadata.platformSecondaryId, metadata.username, metadata.profileUrl,
+      metadata.displayName, metadata.bio, metadata.avatarUrl, metadata.isPrivate, metadata.platformVerified,
+      metadata.metrics.followers, metadata.metrics.following, metadata.metrics.videos, metadata.metrics.likes,
+      JSON.stringify(metadata.metricsAvailability), metadata.providerStatus, metadata.providerMessage
+    ]);
+
+  if (Object.values(metadata.metrics).some(value => value !== null)) {
+    await q.query(`INSERT INTO hof_social_metric_snapshots(social_account_id,followers,following,videos,likes,availability)
+      VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [account.id, metadata.metrics.followers, metadata.metrics.following,
+      metadata.metrics.videos, metadata.metrics.likes, JSON.stringify(metadata.metricsAvailability)]);
+  }
+  return metadata;
+}
+
+/** Bounded scheduled work: refresh a small profile slice, enqueue eligible
+ * creators, and process no more than one posts pull per invocation. */
 export async function runScheduledCollection(env: Env) {
-  const q=db(env);
-  const accounts=await q.query<any>(`SELECT s.id,s.username,s.video_count AS "oldVideoCount"
-    ,(SELECT max(finished_at) FROM hof_sync_jobs j WHERE j.social_account_id=s.id AND j.status='succeeded') AS "lastPostSyncAt"
+  if (env.TIKTOK_SYNC_ENABLED !== "true") return { disabled: true };
+  const q = db(env);
+
+  // Recover jobs left running by a terminated Worker. The posts fetch is bounded;
+  // the 20-minute lease leaves ample room for per-post thumbnail caching.
+  await q.query(`UPDATE hof_sync_jobs SET
+      status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'queued' END,
+      finished_at=now(),error_summary=COALESCE(error_summary,'Recovered abandoned collection job')
+    WHERE platform='tiktok' AND status='running' AND started_at < now()-interval '20 minutes'`);
+
+  const batchSize = Math.min(30, Math.max(1, Number(env.TIKTOK_SYNC_BATCH_SIZE || 10) || 10));
+  const accounts = await q.query<SocialAccount>(`SELECT s.id,s.username,s.platform_user_id AS "platformUserId",
+      s.display_name AS "displayName",s.video_count AS "oldVideoCount",
+      (SELECT max(finished_at) FROM hof_sync_jobs j WHERE j.social_account_id=s.id AND j.status='succeeded') AS "lastPostSyncAt"
     FROM hof_social_accounts s JOIN hof_profiles p ON p.id=s.profile_id
     WHERE s.platform='tiktok' AND p.status='active' AND p.visibility='public'
-    ORDER BY s.last_synced_at NULLS FIRST LIMIT $1`,[Math.min(30,Math.max(1,Number(env.TIKTOK_SYNC_BATCH_SIZE||10)))]);
-  let checked=0,queued=0,metadataErrors=0;
-  const metadata = new Map<string, Awaited<ReturnType<typeof discoverTikTok>>>();
-  if(env.TIKTOK_BATCH_PROFILE_PATH && accounts.length){
-    try{
-      const url=new URL(env.TIKTOK_BATCH_PROFILE_PATH,env.TIKTOK_SCRAPER_BASE_URL);
-      const headers=new Headers({"Accept":"application/json","Content-Type":"application/json"});
-      if(env.TIKTOK_SCRAPER_API_KEY)headers.set("Authorization",`Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
-      const response=await fetch(url,{method:"POST",headers,body:JSON.stringify({handles:accounts.map(a=>a.username)}),signal:AbortSignal.timeout(20000)});
-      if(!response.ok)throw new Error(`Batch profile provider returned ${response.status}`);
-      const payload=await response.json() as any;
-      const list=Array.isArray(payload)?payload:Array.isArray(payload.data)?payload.data:Array.isArray(payload.profiles)?payload.profiles:Array.isArray(payload.users)?payload.users:[];
-      for(const item of list){const handle=String(first(item,["handle","username","unique_id"])||"").replace(/^@/,"").toLowerCase();if(handle)metadata.set(handle,normalizeTikTok(item,handle));}
-    }catch{metadataErrors+=accounts.length;}
-  }
-  for(const a of accounts){
-    try{
-      const m=metadata.get(a.username.toLowerCase()) || await discoverTikTok(env,a.username);
-      const oldCount=a.oldVideoCount===null?null:Number(a.oldVideoCount);
-      const newCount=m.metrics.videos;
-      await q.query(`UPDATE hof_social_accounts SET username=$2,platform_user_id=COALESCE($3,platform_user_id),
-        display_name=COALESCE($4,display_name),bio=COALESCE($5,bio),avatar_url_temporary=COALESCE($6,avatar_url_temporary),
-        is_private=COALESCE($7,is_private),platform_verified=COALESCE($8,platform_verified),
-        followers=COALESCE($9,followers),following=COALESCE($10,following),video_count=COALESCE($11,video_count),total_likes=COALESCE($12,total_likes),
-        metrics_availability=$13::jsonb,last_synced_at=now(),provider_status=$14,provider_message=$15,updated_at=now()
-        WHERE id=$1`,
-        [a.id,m.username,m.platformUserId,m.displayName,m.bio,m.avatarUrl,m.isPrivate,m.platformVerified,
-         m.metrics.followers,m.metrics.following,m.metrics.videos,m.metrics.likes,JSON.stringify(m.metricsAvailability),m.providerStatus,m.providerMessage]);
-      await q.query(`INSERT INTO hof_social_metric_snapshots(social_account_id,followers,following,videos,likes,availability)
-        VALUES($1,$2,$3,$4,$5,$6::jsonb)`,[a.id,m.metrics.followers,m.metrics.following,m.metrics.videos,m.metrics.likes,JSON.stringify(m.metricsAvailability)]);
-      const lastPostSync=a.lastPostSyncAt?new Date(a.lastPostSyncAt).getTime():0;
-      const reconciliationDue=!lastPostSync||Date.now()-lastPostSync>24*60*60*1000;
-      if(oldCount===null||(newCount!==null&&newCount>oldCount)||reconciliationDue){
-        const jobs=await q.query(`INSERT INTO hof_sync_jobs(platform,social_account_id,status,requested_by)
+      AND COALESCE(s.is_private,false)=false
+    ORDER BY s.last_synced_at NULLS FIRST LIMIT $1`, [batchSize]);
+
+  let checked = 0;
+  let queued = 0;
+  let metadataErrors = 0;
+  const batch = await batchProfiles(env, accounts);
+  for (const account of accounts) {
+    try {
+      const metadata = await refreshProfile(env, account, q, batch);
+      const oldCount = account.oldVideoCount === null ? null : Number(account.oldVideoCount);
+      const newCount = metadata.metrics.videos;
+      const lastPostSync = account.lastPostSyncAt ? new Date(account.lastPostSyncAt).getTime() : 0;
+      const reconciliationDue = !lastPostSync || Date.now() - lastPostSync > 24 * 60 * 60 * 1000;
+      const countIncreased = oldCount === null || (newCount !== null && newCount > oldCount);
+      if (metadata.isPrivate !== true && (countIncreased || reconciliationDue)) {
+        const jobs = await q.query<{ id: string }>(`INSERT INTO hof_sync_jobs(platform,social_account_id,status,requested_by)
           SELECT 'tiktok',$1,'queued','video-count-increased'
-          WHERE NOT EXISTS(SELECT 1 FROM hof_sync_jobs WHERE social_account_id=$1 AND status IN ('queued','running'))
-          RETURNING id`,[a.id]);
-        if(jobs.length)queued++;
+          WHERE NOT EXISTS(SELECT 1 FROM hof_sync_jobs
+            WHERE platform='tiktok' AND social_account_id=$1 AND status IN ('queued','running'))
+          RETURNING id`, [account.id]);
+        if (jobs.length) queued++;
       }
       checked++;
-    }catch{metadataErrors++;}
-  }
-  // Only one slow post endpoint call per scheduled tick. Never block public requests.
-  const picked=await q.query<any>(`WITH job AS (
-    SELECT id,social_account_id FROM hof_sync_jobs WHERE platform='tiktok' AND status='queued'
-    ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
-  ) UPDATE hof_sync_jobs j SET status='running',attempts=attempts+1,started_at=now()
-    FROM job WHERE j.id=job.id RETURNING j.id,j.social_account_id AS "socialAccountId"`);
-  let postsResult:any=null;
-  if(picked.length){
-    const job=picked[0];
-    try{
-      const account=await q.query<any>("SELECT username FROM hof_social_accounts WHERE id=$1",[job.socialAccountId]);
-      if(!account.length)throw new Error("Social account no longer exists");
-      postsResult=await pullPosts(env,account[0].username,job.socialAccountId);
-      await q.query("UPDATE hof_sync_jobs SET status='succeeded',finished_at=now(),error_summary=NULL WHERE id=$1",[job.id]);
-    }catch(error){
-      await q.query("UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,finished_at=now(),error_summary=$2 WHERE id=$1",[job.id,String(error).slice(0,300)]);
+    } catch {
+      metadataErrors++;
     }
   }
-  return {metadataChecked:checked,metadataErrors,queued,slowPostPull:postsResult||"none"};
+
+  // Atomic claim: the UPDATE and row lock happen in one database statement.
+  const picked = await q.query<{ id: string; socialAccountId: string }>(`WITH next_job AS (
+      SELECT id FROM hof_sync_jobs
+      WHERE platform='tiktok' AND status='queued'
+      ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1
+    )
+    UPDATE hof_sync_jobs j SET status='running',attempts=attempts+1,started_at=now(),finished_at=NULL
+    FROM next_job WHERE j.id=next_job.id
+    RETURNING j.id,j.social_account_id AS "socialAccountId"`);
+
+  let postsResult: unknown = "none";
+  if (picked.length) {
+    const job = picked[0];
+    try {
+      const rows = await q.query<SocialAccount>(`SELECT id,username,platform_user_id AS "platformUserId",
+          display_name AS "displayName",video_count AS "oldVideoCount",NULL::timestamptz AS "lastPostSyncAt"
+        FROM hof_social_accounts WHERE id=$1 AND platform='tiktok'`, [job.socialAccountId]);
+      if (!rows.length) throw new Error("Social account no longer exists");
+      postsResult = await pullPosts(env, rows[0]);
+      await q.query("UPDATE hof_sync_jobs SET status='succeeded',finished_at=now(),error_summary=NULL WHERE id=$1", [job.id]);
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : "TikTok collection failed";
+      await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
+        finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
+    }
+  }
+  return { metadataChecked: checked, metadataErrors, queued, slowPostPull: postsResult };
 }
