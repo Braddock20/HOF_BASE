@@ -10,9 +10,9 @@ TIKTOK_SCRAPER_API_KEY=
 RATE_LIMIT_ENABLED=true
 LOG_LEVEL=debug
 
-# Configure these only after confirming the exact mother-scraper route names.
+# Mother scraper routes confirmed: profile metadata and creator post list.
 TIKTOK_PROFILE_PATH=/api/profile
-TIKTOK_POSTS_PATH=
+TIKTOK_POSTS_PATH=/api/profile/posts
 TIKTOK_BATCH_PROFILE_PATH=
 TIKTOK_SYNC_BATCH_SIZE=30
 TIKTOK_SYNC_ENABLED=false
