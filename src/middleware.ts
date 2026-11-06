@@ -17,7 +17,7 @@ export const securityHeaders: MiddlewareHandler<HonoEnv> = async (c, next) => {
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
   c.header("X-Frame-Options", "DENY");
   c.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  c.header("Cache-Control", "no-store");
+  if (!c.res.headers.has("Cache-Control")) c.header("Cache-Control", "no-store");
 };
 
 // No browser frontend is included in this release, so CORS is intentionally disabled.
@@ -32,5 +32,20 @@ export const basicRateLimit: MiddlewareHandler<HonoEnv> = async (c, next) => {
   const item = store.get(key);
   if (!item || now - item.t > 60_000) store.set(key, { n: 1, t: now });
   else if (++item.n > 120) return fail(c, 429, "RATE_LIMITED", "Too many requests. Try again shortly.");
+  await next();
+};
+
+
+export const restrictedCors: MiddlewareHandler<HonoEnv> = async (c, next) => {
+  const origin = c.req.header("Origin");
+  const allowed = (c.env.CORS_ORIGINS || "").split(",").map(x => x.trim()).filter(Boolean);
+  if (origin && allowed.includes(origin)) {
+    c.header("Access-Control-Allow-Origin", origin);
+    c.header("Vary", "Origin");
+    c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+    c.header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, X-HOF-Visitor");
+    c.header("Access-Control-Max-Age", "600");
+  }
+  if (c.req.method === "OPTIONS") return c.body(null, origin && allowed.includes(origin) ? 204 : 403);
   await next();
 };
