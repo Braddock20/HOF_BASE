@@ -242,9 +242,13 @@ discover.post("/uploads", async c => {
       VALUES('hof',$1,$2,$3,$4,$5,$6,$7) RETURNING id,status`,[file.type.startsWith("video/")?"video":"image",reason,mediaId,thumbnailId,submitterRef,width,height]);
     return ok(c,{submissionId:sub[0].id,status:sub[0].status,mediaId},201);
   }catch(error){
-    const message=error instanceof Error?error.message:"unknown";
+    const message=error instanceof Error?error.message:String(error);
+    const safeMessage=message
+      .replace(/https?:\/\/[^\s]+/gi,"[url redacted]")
+      .replace(/(authorization|token|application.?key|password)\s*[:=]\s*[^,;\s]+/gi,"$1=[redacted]")
+      .slice(0,240);
     const b2Status=message.match(/\((\d{3})\)/)?.[1]||null;
-    console.error(JSON.stringify({event:"discover_upload_failed",requestId:c.get("requestId"),phase,errorName:error instanceof Error?error.name:"UnknownError",b2Status}));
+    console.error(JSON.stringify({event:"discover_upload_failed",requestId:c.get("requestId"),phase,errorName:error instanceof Error?error.name:"UnknownError",errorMessage:safeMessage,b2Status}));
     return fail(c,503,"UPLOAD_FAILED","Private media upload failed. Please retry.");
   }
 });
