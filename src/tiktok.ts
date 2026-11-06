@@ -21,53 +21,105 @@ export interface DiscoveredSocialAccount {
 
 function num(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  const value = Number(v);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
-function first(o: Record<string, unknown>, keys: string[]) {
-  for (const k of keys) if (o[k] !== undefined && o[k] !== null) return o[k];
+
+function first(o: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) if (o[key] !== undefined && o[key] !== null) return o[key];
   return null;
 }
 
+function cleanText(value: unknown, max = 4000): string | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const result = String(value).trim();
+  return result ? result.slice(0, max) : null;
+}
+
+function httpsUrl(value: unknown, fallback: string | null = null): string | null {
+  const candidate = cleanText(value, 2048);
+  if (!candidate) return fallback;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" ? url.toString() : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function tiktokProfileUrl(value: unknown, fallback: string): string {
+  const candidate = httpsUrl(value);
+  if (!candidate) return fallback;
+  try {
+    const url = new URL(candidate);
+    const host = url.hostname.toLowerCase();
+    return ["tiktok.com", "www.tiktok.com", "m.tiktok.com"].includes(host) ? url.toString() : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function providerStatus(statusValue: unknown, metrics: Record<string, number | null>): DiscoveredSocialAccount["providerStatus"] {
+  const status = String(statusValue ?? "ok").toLowerCase();
+  if (status.includes("not_found") || status === "not found" || status === "404") return "not_found";
+  if (status.includes("rate") || status === "429") return "rate_limited";
+  if (status === "error" || status === "failed" || status === "false") return "error";
+  if (status === "ok" && Object.values(metrics).some(value => value !== null)) return "ok";
+  return "partial";
+}
+
 export function normalizeTikTok(raw: Record<string, unknown>, requested: string): DiscoveredSocialAccount {
-  const d = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
-  const username = String(first(d, ["handle", "username", "unique_id"]) || requested).replace(/^@/, "");
+  const nested = raw.data && typeof raw.data === "object" && !Array.isArray(raw.data)
+    ? raw.data as Record<string, unknown>
+    : raw;
+  const username = (cleanText(first(nested, ["handle", "username", "unique_id"]), 100) || requested.replace(/^@/, "").trim()).replace(/^@/, "");
   const metrics = {
-    followers: num(first(d, ["follower_count", "followers"])),
-    following: num(first(d, ["following_count", "following"])),
-    videos: num(first(d, ["video_count", "videos"])),
-    likes: num(first(d, ["total_likes", "likes"]))
+    followers: num(first(nested, ["follower_count", "followers"])),
+    following: num(first(nested, ["following_count", "following"])),
+    videos: num(first(nested, ["video_count", "videos"])),
+    likes: num(first(nested, ["total_likes", "likes"]))
   };
-  const availability = Object.fromEntries(Object.entries(metrics).map(([k, v]) => [k, v === null ? "unavailable" : "available"])) as Record<string, "available" | "unavailable">;
-  const status = String(d.status || raw.status || "ok").toLowerCase();
+  const metricsAvailability = Object.fromEntries(
+    Object.entries(metrics).map(([key, value]) => [key, value === null ? "unavailable" : "available"])
+  ) as Record<string, "available" | "unavailable">;
+  const profileFallback = `https://www.tiktok.com/@${encodeURIComponent(username)}`;
+  const status = providerStatus(first(nested, ["status"]) ?? (first(raw, ["status"]) ?? "ok"), metrics);
+
   return {
-    platform: "tiktok", username,
-    platformUserId: first(d, ["user_id", "uid"]) == null ? null : String(first(d, ["user_id", "uid"])),
-    platformSecondaryId: first(d, ["sec_uid"]) == null ? null : String(d.sec_uid),
-    profileUrl: String(first(d, ["profile_url", "url"]) || `https://www.tiktok.com/@${encodeURIComponent(username)}`),
-    displayName: first(d, ["nickname", "display_name"]) == null ? null : String(first(d, ["nickname", "display_name"])),
-    bio: first(d, ["bio", "signature"]) == null ? null : String(first(d, ["bio", "signature"])),
-    avatarUrl: first(d, ["avatar_large", "avatar_medium", "avatar_thumb"]) == null ? null : String(first(d, ["avatar_large", "avatar_medium", "avatar_thumb"])),
-    isPrivate: boolish(d.is_private), platformVerified: boolish(d.verified),
-    metrics, metricsAvailability: availability,
-    scrapedAt: String(d.scraped_at || new Date().toISOString()),
-    providerStatus: status.includes("not_found") ? "not_found" : status.includes("rate") ? "rate_limited" :
-      status === "ok" && Object.values(metrics).some(v => v !== null) ? "ok" : "partial",
-    providerMessage: raw.message == null ? null : String(raw.message)
+    platform: "tiktok",
+    username,
+    platformUserId: cleanText(first(nested, ["user_id", "uid"]), 200),
+    platformSecondaryId: cleanText(first(nested, ["sec_uid"]), 500),
+    profileUrl: tiktokProfileUrl(first(nested, ["profile_url", "url"]), profileFallback),
+    displayName: cleanText(first(nested, ["nickname", "display_name"]), 300),
+    bio: cleanText(first(nested, ["bio", "signature"]), 4000),
+    avatarUrl: httpsUrl(first(nested, ["avatar_large", "avatar_medium", "avatar_thumb"])),
+    isPrivate: boolish(nested.is_private),
+    platformVerified: boolish(nested.verified),
+    metrics,
+    metricsAvailability,
+    scrapedAt: cleanText(nested.scraped_at, 100) || new Date().toISOString(),
+    providerStatus: status,
+    providerMessage: cleanText(first(raw, ["message", "error"]), 500)
   };
 }
 
 export async function discoverTikTok(env: Env, username: string): Promise<DiscoveredSocialAccount> {
   if (!env.TIKTOK_SCRAPER_BASE_URL) throw new Error("TikTok scraper is not configured");
-  const base = env.TIKTOK_SCRAPER_BASE_URL.replace(/\/+$/, "");
-  const url = new URL(env.TIKTOK_PROFILE_PATH || "/api/profile", `${base}/`);
+  const base = new URL(env.TIKTOK_SCRAPER_BASE_URL);
+  if (base.protocol !== "https:") throw new Error("TikTok scraper URL must use HTTPS");
+  const url = new URL(env.TIKTOK_PROFILE_PATH || "/api/profile", `${base.toString().replace(/\/+$/, "")}/`);
   url.searchParams.set("handle", username.replace(/^@/, ""));
   const headers = new Headers({ Accept: "application/json" });
   if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000), redirect: "error" });
   if (response.status === 404) throw new Error("TikTok account was not found");
   if (response.status === 429) throw new Error("TikTok provider is rate limited");
   if (!response.ok) throw new Error(`TikTok provider returned ${response.status}`);
   const raw = await response.json() as Record<string, unknown>;
-  return normalizeTikTok(raw, username);
+  const result = normalizeTikTok(raw, username);
+  if (result.providerStatus === "not_found") throw new Error("TikTok account was not found");
+  if (result.providerStatus === "rate_limited") throw new Error("TikTok provider is rate limited");
+  if (result.providerStatus === "error") throw new Error("TikTok provider returned an unsuccessful profile response");
+  return result;
 }
