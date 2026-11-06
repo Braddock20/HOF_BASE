@@ -60,7 +60,7 @@ export function normalizeTikTok(raw: Record<string, unknown>, requested: string)
 export async function discoverTikTok(env: Env, username: string): Promise<DiscoveredSocialAccount> {
   if (!env.TIKTOK_SCRAPER_BASE_URL) throw new Error("TikTok scraper is not configured");
   const base = env.TIKTOK_SCRAPER_BASE_URL.replace(/\/+$/, "");
-  const url = new URL(`${base}/api/profile`);
+  const url = new URL(env.TIKTOK_PROFILE_PATH || "/api/profile", `${base}/`);
   url.searchParams.set("handle", username.replace(/^@/, ""));
   const headers = new Headers({ Accept: "application/json" });
   if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
