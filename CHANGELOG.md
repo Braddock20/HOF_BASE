@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.3 — TikTok creator sync hardening
+
+- Hardened profile normalization, status handling, HTTPS URL validation and identity consistency checks.
+- Verified every imported TikTok post against the registered creator handle and, when available, platform user ID.
+- Preserved existing Discover moderation states during post refresh; deleted-source tombstones remain authoritative.
+- Refreshed safe post metadata and engagement values without overwriting established HOF creator attribution.
+- Added metric snapshots only when at least one engagement metric is available.
+- Added abandoned-job recovery, bounded retries, one-post-pull-per-invocation behavior and explicit sync opt-in checks.
+- Restricted cover caching to supported TikTok CDN hostnames and image MIME types; B2 cache failures do not block post imports.
+- Corrected B2 authorization parsing to support the nested v3 `apiInfo.storageApi` response while retaining legacy response compatibility.
+- Kept `TIKTOK_SYNC_ENABLED=false` in all Wrangler environments.
+
 ## 1.0.1
 - Removed third-party/OIDC/JWT authentication from the Worker.
 - Protected all admin API routes with a server-side `ADMIN_API_KEY` supplied through `X-API-Key`.
