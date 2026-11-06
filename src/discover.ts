@@ -219,8 +219,10 @@ discover.post("/uploads", async c => {
   if(reason.trim().length<5||reason.length>1000)return fail(c,400,"VALIDATION_ERROR","A submission reason is required.");
   const ext=file.type.split("/")[1].replace("jpeg","jpg");
   const key=`uploads/pending/${crypto.randomUUID()}.${ext}`;
+  let phase="b2_upload";
   try{
     const stored=await uploadPrivateB2Object(c.env,key,file);
+    phase="media_record_insert";
     const rows=await db(c.env).query(`INSERT INTO hof_media_assets(object_key,b2_file_id,mime_type,file_size,width,height,checksum_sha1,status,visibility)
       VALUES($1,$2,$3,$4,$5,$6,$7,'ready','private') RETURNING id`,[key,stored.fileId,stored.mimeType,stored.size,width,height,stored.sha1]);
     const mediaId=rows[0].id;
@@ -228,15 +230,23 @@ discover.post("/uploads", async c => {
     if(thumbnail instanceof File&&thumbnail.type.startsWith("image/")&&thumbnail.size>0&&thumbnail.size<=2*1024*1024){
       const thumbExt=thumbnail.type.split("/")[1].replace("jpeg","jpg").replace(/[^a-z0-9]/gi,"")||"img";
       const thumbKey=`uploads/pending-thumbnails/${crypto.randomUUID()}.${thumbExt}`;
+      phase="thumbnail_b2_upload";
       const thumbStored=await uploadPrivateB2Object(c.env,thumbKey,thumbnail);
+      phase="thumbnail_record_insert";
       const thumbRows=await db(c.env).query<any>(`INSERT INTO hof_media_assets(object_key,b2_file_id,mime_type,file_size,checksum_sha1,status,visibility)
         VALUES($1,$2,$3,$4,$5,'ready','private') RETURNING id`,[thumbKey,thumbStored.fileId,thumbStored.mimeType,thumbStored.size,thumbStored.sha1]);
       thumbnailId=thumbRows[0].id;
     }
+    phase="submission_record_insert";
     const sub=await db(c.env).query(`INSERT INTO hof_discover_submissions(source,media_type,reason,media_asset_id,thumbnail_media_id,submitter_ref,width,height)
       VALUES('hof',$1,$2,$3,$4,$5,$6,$7) RETURNING id,status`,[file.type.startsWith("video/")?"video":"image",reason,mediaId,thumbnailId,submitterRef,width,height]);
     return ok(c,{submissionId:sub[0].id,status:sub[0].status,mediaId},201);
-  }catch{return fail(c,503,"UPLOAD_FAILED","Private media upload failed. Please retry.");}
+  }catch(error){
+    const message=error instanceof Error?error.message:"unknown";
+    const b2Status=message.match(/\((\d{3})\)/)?.[1]||null;
+    console.error(JSON.stringify({event:"discover_upload_failed",requestId:c.get("requestId"),phase,errorName:error instanceof Error?error.name:"UnknownError",b2Status}));
+    return fail(c,503,"UPLOAD_FAILED","Private media upload failed. Please retry.");
+  }
 });
 
 discover.get("/media-config", c=>ok(c,{storage:"private-b2",delivery:"stable-hof-proxy",uploadMaxBytes:8*1024*1024}));
