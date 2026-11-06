@@ -22,12 +22,6 @@ async function matchesApiKey(provided: string, expected: string): Promise<boolea
 /** One server-side master API key currently acts as the HOF Super Admin. */
 export const requireAdmin: MiddlewareHandler<HonoEnv> = async (c, next) => {
   const expected = c.env.ADMIN_API_KEY;
-
-console.log("ADMIN KEY DIAGNOSTIC", {
-  exists: typeof expected === "string" && expected.length > 0,
-  length: expected?.length ?? 0,
-  environment: c.env.APP_ENV
-});
   const provided = c.req.header("X-API-Key") || "";
   if (!expected || expected.length < 32) {
     return fail(c, 503, "ADMIN_AUTH_NOT_CONFIGURED", "The admin API key is not configured securely.");
