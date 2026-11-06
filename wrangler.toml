@@ -1,4 +1,4 @@
-name = "hof-api"
+name = "hof-base"
 main = "src/index.ts"
 compatibility_date = "2026-11-06"
 compatibility_flags = ["nodejs_compat"]
@@ -7,11 +7,21 @@ compatibility_flags = ["nodejs_compat"]
 APP_ENV = "development"
 LOG_LEVEL = "info"
 RATE_LIMIT_ENABLED = "true"
+TIKTOK_SYNC_ENABLED = "false"
+
+[triggers]
+crons = ["*/5 * * * *"]
 
 [env.staging]
-name = "hof-api-staging"
-vars = { APP_ENV = "staging", LOG_LEVEL = "info", RATE_LIMIT_ENABLED = "true" }
+name = "hof-base-staging"
+vars = { APP_ENV = "staging", LOG_LEVEL = "info", RATE_LIMIT_ENABLED = "true", TIKTOK_SYNC_ENABLED = "false" }
 
 [env.production]
-name = "hof-api"
-vars = { APP_ENV = "production", LOG_LEVEL = "warn", RATE_LIMIT_ENABLED = "true" }
+name = "hof-base"
+vars = { APP_ENV = "production", LOG_LEVEL = "warn", RATE_LIMIT_ENABLED = "true", TIKTOK_SYNC_ENABLED = "false" }
+
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
+
+[env.production.triggers]
+crons = ["*/5 * * * *"]
