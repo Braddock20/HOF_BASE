@@ -436,7 +436,18 @@ discover.post("/uploads", async c => {
       b2Status
     }));
 
-    return fail(c, 503, "UPLOAD_FAILED", "Upload or publication failed. Please retry.");
+    return fail(
+  c,
+  503,
+  "UPLOAD_FAILED",
+  "Upload or publication failed. Diagnostic information follows.",
+  [{
+    phase,
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    errorMessage: safeMessage,
+    b2Status
+  }]
+);
   }
 });
 
