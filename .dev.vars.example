@@ -9,3 +9,18 @@ TIKTOK_SCRAPER_API_KEY=
 
 RATE_LIMIT_ENABLED=true
 LOG_LEVEL=debug
+
+# Configure these only after confirming the exact mother-scraper route names.
+TIKTOK_PROFILE_PATH=/api/profile
+TIKTOK_POSTS_PATH=
+TIKTOK_BATCH_PROFILE_PATH=
+TIKTOK_SYNC_BATCH_SIZE=30
+TIKTOK_SYNC_ENABLED=false
+
+# Backblaze B2 private bucket credentials (Cloudflare Worker secrets).
+B2_ACCOUNT_ID=
+B2_APPLICATION_KEY_ID=
+B2_APPLICATION_KEY=
+B2_BUCKET_ID=
+B2_BUCKET_NAME=
+\n# Comma-separated exact frontend origins; do not use * in production.\nCORS_ORIGINS=https://your-hof-frontend.example\n
