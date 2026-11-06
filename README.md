@@ -8,7 +8,11 @@ Backend-only Cloudflare Worker API for the Hall of Fame system. This release con
 - Neon PostgreSQL schema and initial migration.
 - Public profile, search, category, section, rank and health endpoints.
 - TikTok scraper adapter with normalized public metadata and nullable metrics.
-- API-key protected admin endpoints and database-seeded permission checks.
+- Dedicated Discover feed API with session-stable randomized cursor pagination.
+- User creator requests, Discover post suggestions, private media uploads and post reports.
+- Admin-only review queues for creator requests, post submissions and reports.
+- Scheduled metadata polling with post-count change detection and one slow post pull per cron tick.
+- Private Backblaze B2 media storage behind stable, non-expiring HOF proxy URLs.
 - Profile editing, independent identity/campus verification, moderation, rank creation/assignment and audit views.
 - Seeded role/permission definitions and curated sections/categories.
 - Request IDs, security headers, JSON response envelopes and rate-limit guard.
@@ -17,8 +21,8 @@ Backend-only Cloudflare Worker API for the Hall of Fame system. This release con
 
 - Frontend or browser application.
 - Google, Clerk, Auth0, Supabase Auth, OIDC, OAuth, JWT or other third-party authentication.
-- Student sign-in. Student nominations and public reports return `501 NOT_CONFIGURED` until a first-party identity and abuse-control design is added.
-- Instagram/YouTube scraping, automatic metric scheduling, award voting, claims, or a complete admin management API.
+- Student sign-in / verified submitter identity. Public suggestions and reports are accepted as untrusted submissions and remain private until admin review.
+- Instagram/YouTube scraper adapters, verified student identity, direct large-file B2 multipart uploads, and a full frontend.
 
 The master API key currently represents the Super Admin and receives the permissions seeded in `hof_permissions`. Keep it private and use it only from a trusted operator environment. This is intentionally a simple first-stage admin access model; it is not a per-admin key-management system.
 
@@ -79,12 +83,34 @@ curl 'http://localhost:8787/api/admin/me' \
 
 All admin routes require the header. Missing/invalid keys receive `401`; a missing server-side key configuration receives `503`. The API key is not accepted as a query parameter or bearer token.
 
+## Discover and media architecture
+
+- `GET /api/discover/feed` returns 24 items by default and uses `next_cursor` to continue the same feed session. The server stores a randomized post-ID snapshot so page ordering does not shift while a person scrolls. Feed sessions expire after two days.
+- `GET /api/discover/latest`, `/posts/:id`, `/categories`, and `/trending` are separate Discover read APIs.
+- `POST /api/discover/reports` submits a post report. `POST /api/discover/submissions` submits a TikTok/external post link. `POST /api/discover/creator-requests` suggests a creator. `POST /api/discover/seen` records visible post IDs against a hashed, pseudonymous visitor key; the frontend should also keep seen IDs locally for offline rotation. Send `X-HOF-Visitor` with feed requests to exclude previously seen posts when a new feed session is created. Users cannot assign HOF categories or verification.
+- `POST /api/discover/uploads` accepts first-party images and short videos up to 8 MB and stores them in the private B2 bucket. Uploads stay private until an admin approves the submission.
+- Admin review routes are under `/api/admin/discover/*`. Creator approval requires an admin-selected `categoryId`.
+- `DELETE /api/admin/discover/posts/:id` permanently removes a post and attempts to delete its B2 media objects. `POST /api/admin/profiles/:id/remove` is a soft removal; `DELETE /api/admin/profiles/:id` is the confirmed permanent-delete route.
+- Discover JSON never exposes B2 temporary download URLs or raw TikTok cover URLs. B2 media is delivered through stable URLs such as `/api/media/{mediaId}`. The Worker privately authenticates to B2 and streams the object; B2 credentials and authorization tokens never reach the browser. TikTok video posts remain hosted/rendered by TikTok and HOF stores their post ID and canonical post URL. When B2 is configured, TikTok cover images are cached in B2 and delivered through stable HOF URLs. If a cover cannot be cached, the feed returns `thumbnail_url: null` rather than an expiring provider URL.
+- The API returns each post's original `width`, `height` and `aspect_ratio`, plus `layout: "masonry"`. The frontend uses these dimensions to create Pinterest-style variable-height columns/tiles; the API does not prescribe screen positions.
+
+## Background TikTok collection
+
+The Worker cron runs every 5 minutes. Set `TIKTOK_SYNC_ENABLED=true` only after configuring the scraper routes. It checks a bounded slice of active TikTok accounts through the fast profile endpoint (or the configured batch profile endpoint), compares stored video counts, and queues accounts whose counts increased (or whose first collection is due). It processes at most one slow posts endpoint request per cron tick, then upserts posts by TikTok `video_id` and appends engagement snapshots. It does not fetch TikTok posts in a public request.
+
+`TIKTOK_POSTS_PATH` is intentionally not guessed: set it to the exact path exposed by your mother scraper. `TIKTOK_BATCH_PROFILE_PATH` is optional and must accept `POST {"handles":["..."]}` and return a list in `data`, `profiles`, or `users`. Without a batch route, metadata is checked one account at a time. The posts endpoint is called with `?handle=username`. These are adapter contracts to verify against the actual scraper before enabling the cron.
+
 ## Cloudflare secrets and deployment
 
 ```bash
 npx wrangler secret put DATABASE_URL
 npx wrangler secret put ADMIN_API_KEY
 npx wrangler secret put TIKTOK_SCRAPER_API_KEY
+npx wrangler secret put B2_ACCOUNT_ID
+npx wrangler secret put B2_APPLICATION_KEY_ID
+npx wrangler secret put B2_APPLICATION_KEY
+npx wrangler secret put B2_BUCKET_ID
+npx wrangler secret put B2_BUCKET_NAME
 ```
 
 Only configure the scraper key if the scraper requires it. Configure non-secret variables in `wrangler.toml` or the Cloudflare dashboard.
@@ -105,12 +131,18 @@ Public read:
 - `GET /api/sections`, `/api/sections/:slug`, `/api/featured`, `/api/trending`
 - `GET /api/rankings`, `/api/rankings/:slug`, `/api/platforms`
 
-Deferred public write:
-- `POST /api/nominations` — `501 NOT_CONFIGURED`
-- `POST /api/reports` — `501 NOT_CONFIGURED`
+Public submissions:
+- `POST /api/discover/submissions`, `/uploads`, `/reports`, `/seen`, `/creator-requests`
 
 Admin (all require `X-API-Key`):
 - `GET /api/admin/me`, `/api/admin/profiles`, `/api/admin/ranks`, `/api/admin/audit-logs`
+- `GET /api/admin/discover/posts`, `/reports`, `/submissions`, `/creator-requests`, `/media/:id`
+- `GET /api/admin/categories`
+- `POST /api/admin/categories`, `/profiles/:id/categories`
+- `PATCH /api/admin/categories/:id`
+- `PATCH /api/admin/discover/reports/:id`, `/submissions/:id`, `/creator-requests/:id`
+- `POST /api/admin/discover/posts/:id/review`
+- `DELETE /api/admin/discover/posts/:id`, `/api/admin/profiles/:id`
 - `POST /api/admin/profiles`
 - `PATCH /api/admin/profiles/:id`
 - `POST /api/admin/profiles/:id/verify/:type`
@@ -121,6 +153,6 @@ Admin (all require `X-API-Key`):
 
 ## Known implementation gaps
 
-This is a backend foundation, not a production certification. Dedicated route slices still remain for verification revocation, rank revocation, section/category management, complete admin/key rotation management, award lifecycle and voting, claims, metric synchronization/snapshots, and durable distributed rate limiting. Trending remains empty until reliable metric snapshots and a documented algorithm exist. Instagram/YouTube adapters are not faked. Review platform terms before storing or rehosting profile media.
+This is a backend foundation, not a production certification. Run migrations 0001 and 0002 before deploying this version. Verify the mother scraper route paths and batch response shape before enabling scheduled collection. Public submissions currently have no verified student login; treat submitter references as untrusted hints, enforce edge rate limiting/Turnstile before launch, and keep all submissions pending until admin review. The 8 MB B2 upload endpoint is a starter path; larger videos need direct B2 multipart upload authorization. B2 stable URLs depend on the HOF Worker domain remaining active and B2 credentials retaining read access; the underlying B2 download authorization is refreshed server-side and is never sent to clients. Dedicated route slices still remain for verification revocation, rank revocation, section management, complete admin/key rotation management, award lifecycle and voting, claims, and durable distributed rate limiting. Trending remains empty until reliable metric snapshots and a documented algorithm exist. Instagram/YouTube adapters are not faked. Review platform terms before storing or rehosting profile media.
 
 The current rate limiter is per-isolate only. Add Cloudflare WAF/rate limiting or a shared durable limiter before public launch. Keep the master API key in a secret manager and restrict who can read or deploy Worker secrets.
