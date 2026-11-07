@@ -151,14 +151,18 @@ async function pullPosts(env: Env, account: SocialAccount) {
   let updated = 0;
   let skipped = 0;
   let snapshots = 0;
+  const reasons: Record<string, number> = {};
+  const skip = (reason: string) => { skipped++; reasons[reason] = (reasons[reason] || 0) + 1; };
 
   for (const video of videos) {
     const sourcePostId = String(first(video, ["video_id", "id"]) ?? "").trim();
     const sourceUrl = safeTikTokPostUrl(first(video, ["source_url", "url"]));
     const status = String(video?.status ?? "ok").toLowerCase();
     const isAd = String(video?.is_ad ?? "false").toLowerCase() === "true" || video?.is_ad === 1;
-    if (!sourcePostId || sourcePostId.length > 200 || !sourceUrl || status !== "ok" || isAd) {
-      skipped++;
+    const skipReason = !sourcePostId || sourcePostId.length > 200 ? "no_id" : !sourceUrl ? "bad_url"
+      : status !== "ok" ? `status_${status}`.slice(0, 40) : isAd ? "ad" : "";
+    if (skipReason) {
+      skip(skipReason);
       continue;
     }
 
@@ -172,17 +176,17 @@ async function pullPosts(env: Env, account: SocialAccount) {
     const authorPresent = Boolean(authorHandle || authorId);
     // The request was for this one handle, so a video with no author fields is accepted; a video naming another author is not.
     if (authorPresent && !authorMatches) {
-      skipped++;
+      skip("other_author");
       continue;
     }
     if (authorId && account.platformUserId && authorId !== account.platformUserId) {
-      skipped++;
+      skip("other_author_id");
       continue;
     }
 
     const tombstone = await query.query("SELECT 1 FROM hof_deleted_source_posts WHERE source='tiktok' AND source_post_id=$1", [sourcePostId]);
     if (tombstone.length) {
-      skipped++;
+      skip("deleted");
       continue;
     }
 
@@ -194,7 +198,7 @@ async function pullPosts(env: Env, account: SocialAccount) {
       `SELECT thumbnail_media_id AS "thumbnailMediaId",creator_social_account_id AS "creatorSocialAccountId"
        FROM hof_discover_posts WHERE source='tiktok' AND source_post_id=$1`, [sourcePostId]);
     if (existing[0]?.creatorSocialAccountId && existing[0].creatorSocialAccountId !== account.id) {
-      skipped++;
+      skip("owned_by_other_creator");
       continue;
     }
     const thumbnailMediaId = existing[0]?.thumbnailMediaId || (coverUrl ? await cacheCover(env, coverUrl, sourcePostId) : null);
@@ -232,7 +236,7 @@ async function pullPosts(env: Env, account: SocialAccount) {
       ]);
 
     if (!result.length) {
-      skipped++;
+      skip("conflict");
       continue;
     }
     if (result[0].inserted) inserted++; else updated++;
@@ -242,7 +246,12 @@ async function pullPosts(env: Env, account: SocialAccount) {
       snapshots++;
     }
   }
-  return { inserted, updated, skipped, snapshots, received: videos.length };
+  // Videos arrived but none could be stored: fail loudly with the reasons instead of recording a silent success
+  // (a "success" with nothing stored would also re-queue the account on every cron run).
+  if (videos.length > 0 && inserted + updated === 0) {
+    throw new Error(`Received ${videos.length} videos but stored none; skipped: ${JSON.stringify(reasons)}`.slice(0, 300));
+  }
+  return { inserted, updated, skipped, snapshots, received: videos.length, reasons };
 }
 
 async function batchProfiles(env: Env, accounts: SocialAccount[]): Promise<Map<string, ReturnType<typeof normalizeTikTok>>> {
@@ -317,7 +326,7 @@ export async function processQueuedJobs(env: Env, maxJobs = 3): Promise<unknown[
     const picked = await q.query<{ id: string; socialAccountId: string }>(`WITH next_job AS (
         SELECT id FROM hof_sync_jobs
         WHERE platform='tiktok' AND status='queued'
-        ORDER BY (requested_by IN ('creator-linked','missing-videos')) DESC, created_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+        ORDER BY attempts ASC, (requested_by IN ('creator-linked','missing-videos')) DESC, created_at, id FOR UPDATE SKIP LOCKED LIMIT 1
       )
       UPDATE hof_sync_jobs j SET status='running',attempts=attempts+1,started_at=now(),finished_at=NULL
       FROM next_job WHERE j.id=next_job.id
@@ -326,6 +335,7 @@ export async function processQueuedJobs(env: Env, maxJobs = 3): Promise<unknown[
 
     const job = picked[0];
     let failedThisRound = false;
+    let failureSummary = "";
     let postsResult: unknown = "none";
     try {
       const rows = await q.query<SocialAccount>(`SELECT id,username,platform_user_id AS "platformUserId",
@@ -337,11 +347,13 @@ export async function processQueuedJobs(env: Env, maxJobs = 3): Promise<unknown[
     } catch (error) {
       failedThisRound = true;
       const summary = error instanceof Error ? error.message : "TikTok collection failed";
+      failureSummary = summary;
       await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
         finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
     }
     results.push(postsResult);
-    if (failedThisRound) break;
+    // One unreadable account must not block healthy ones: keep going unless TikTok/the scraper is rate limiting us.
+    if (failedThisRound && /429|rate.?limit|too many/i.test(failureSummary)) break;
   }
   return results;
 }
