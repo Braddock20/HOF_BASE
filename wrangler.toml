@@ -22,11 +22,11 @@ crons = ["*/5 * * * *"]
 
 [env.staging]
 name = "hof-base-staging"
-vars = { APP_ENV = "staging", LOG_LEVEL = "info", RATE_LIMIT_ENABLED = "true", TIKTOK_SCRAPER_BASE_URL = "https://hof.talesapi.workers.dev", TIKTOK_PROFILE_PATH = "/api/profile", TIKTOK_POSTS_PATH = "/api/profile/posts", TIKTOK_SYNC_BATCH_SIZE = "10", TIKTOK_SYNC_ENABLED = "false" }
+vars = { APP_ENV = "staging", LOG_LEVEL = "info", RATE_LIMIT_ENABLED = "true", TIKTOK_SCRAPER_BASE_URL = "https://hof.talesapi.workers.dev", TIKTOK_PROFILE_PATH = "/api/profile", TIKTOK_POSTS_PATH = "/api/profile/posts", TIKTOK_SYNC_BATCH_SIZE = "10", TIKTOK_SYNC_ENABLED = "true" }
 
 [env.production]
 name = "hof-base"
-vars = { APP_ENV = "production", LOG_LEVEL = "warn", RATE_LIMIT_ENABLED = "true", TIKTOK_SCRAPER_BASE_URL = "https://hof.talesapi.workers.dev", TIKTOK_PROFILE_PATH = "/api/profile", TIKTOK_POSTS_PATH = "/api/profile/posts", TIKTOK_SYNC_BATCH_SIZE = "10", TIKTOK_SYNC_ENABLED = "false" }
+vars = { APP_ENV = "production", LOG_LEVEL = "warn", RATE_LIMIT_ENABLED = "true", TIKTOK_SCRAPER_BASE_URL = "https://hof.talesapi.workers.dev", TIKTOK_PROFILE_PATH = "/api/profile", TIKTOK_POSTS_PATH = "/api/profile/posts", TIKTOK_SYNC_BATCH_SIZE = "10", TIKTOK_SYNC_ENABLED = "true" }
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
