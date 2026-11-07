@@ -126,7 +126,6 @@ async function pullPosts(env: Env, account: SocialAccount) {
   const url = new URL(env.TIKTOK_POSTS_PATH, `${base.toString().replace(/\/+$/, "")}/`);
   url.searchParams.set("handle", account.username.replace(/^@/, ""));
   const headers = new Headers({ Accept: "application/json" });
-  if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(25_000), redirect: "manual" });
   if (response.status === 429) throw new Error("TikTok posts provider is rate limited");
   if (!response.ok) throw new Error(`TikTok posts provider returned ${response.status}`);
@@ -239,8 +238,7 @@ async function batchProfiles(env: Env, accounts: SocialAccount[]): Promise<Map<s
     if (base.protocol !== "https:") return result;
     const url = new URL(env.TIKTOK_BATCH_PROFILE_PATH, `${base.toString().replace(/\/+$/, "")}/`);
     const headers = new Headers({ Accept: "application/json", "Content-Type": "application/json" });
-    if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
-    const response = await fetch(url, {
+      const response = await fetch(url, {
       method: "POST", headers, body: JSON.stringify({ handles: accounts.map(account => account.username) }),
       signal: AbortSignal.timeout(20_000), redirect: "manual"
     });
