@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HOF Console</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232c;--line:#2a323d;--text:#e6edf3;--mute:#8b96a3;--accent:#5b9cff;--ok:#3fb950;--bad:#f85149;--warn:#d29922}
+@media(prefers-color-scheme:light){:root{--bg:#f5f7fa;--panel:#fff;--panel2:#eef1f5;--line:#d8dee6;--text:#18212b;--mute:#5d6b7a;--accent:#1f6feb;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:15px;margin:0 8px 0 0}
+.spacer{flex:1}
+nav{display:flex;gap:4px;overflow-x:auto;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+nav button{white-space:nowrap}
+main{padding:14px;max-width:1200px;margin:0 auto}
+button,input,select,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+button{cursor:pointer}button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--bad)}
+nav button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+input,select,textarea{width:100%}
+textarea{min-height:80px;resize:vertical}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.bar h2{margin:0 8px 0 0;font-size:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+table{border-collapse:collapse;width:100%}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;max-width:320px;overflow-wrap:anywhere}
+th{color:var(--mute);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em;background:var(--panel2)}
+td.actions{white-space:nowrap}td.actions button{margin:0 4px 4px 0;padding:3px 8px;font-size:12px}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line);color:var(--mute)}
+.pill.good{color:var(--ok);border-color:var(--ok)}.pill.bad{color:var(--bad);border-color:var(--bad)}.pill.warn{color:var(--warn);border-color:var(--warn)}
+.empty{padding:24px;text-align:center;color:var(--mute)}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;width:min(560px,94vw);padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.55)}
+label{display:block;margin:10px 0 3px;color:var(--mute);font-size:12px}
+.row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.chk{display:flex;gap:8px;align-items:center;margin-top:10px}.chk input{width:auto}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;max-width:92vw;display:none;z-index:20;overflow-wrap:anywhere}
+#toast.bad{border-color:var(--bad)}#toast.good{border-color:var(--ok)}
+pre{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px;overflow:auto;max-height:55vh;margin:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.mute{color:var(--mute)}
+.hint{font-size:12px;color:var(--mute);margin:4px 0}
+img.thumb{max-width:100%;max-height:50vh;border-radius:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>HOF Console</h1>
+  <input id="base" style="width:min(320px,100%)" placeholder="API base URL" aria-label="API base URL">
+  <input id="key" type="password" style="width:min(240px,100%)" placeholder="Admin API key" autocomplete="off" aria-label="Admin API key">
+  <button id="connect" class="primary">Connect</button>
+  <label class="chk" style="margin:0"><input type="checkbox" id="remember"> remember in this tab</label>
+  <span class="spacer"></span>
+  <span id="status" class="pill">disconnected</span>
+</header>
+<nav id="nav"></nav>
+<main id="main"><div class="empty">Enter your API base URL and admin key, then Connect.</div></main>
+<div id="toast" role="status"></div>
+<dialog id="dlg"></dialog>
+
+<script>
+"use strict";
+/* ---------- tiny helpers (all API data is rendered with textContent, never innerHTML) ---------- */
+const $ = s => document.querySelector(s);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+let toastTimer;
+function toast(msg, kind) {
+  const t = $("#toast"); t.textContent = msg; t.className = kind || ""; t.style.display = "block";
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", kind === "bad" ? 7000 : 3000);
+}
+const safeStore = {
+  get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch {} },
+  del(k) { try { sessionStorage.removeItem(k); } catch {} }
+};
+const safeLocal = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+};
+
+/* ---------- API client ---------- */
+let BASE = "", KEY = "";
+async function api(method, path, body, opts = {}) {
+  const headers = { "X-API-Key": KEY, Accept: "application/json" };
+  const init = { method, headers };
+  if (body !== undefined) { headers["Content-Type"] = "application/json"; init.body = JSON.stringify(body); }
+  let res;
+  try { res = await fetch(BASE + path, init); }
+  catch (e) { throw new Error("Network/CORS error. Check the base URL and that CORS_ORIGINS on the Worker includes this page's origin (" + location.origin + ").") }
+  if (opts.blob) { if (!res.ok) throw new Error("HTTP " + res.status); return res.blob(); }
+  let json = null; try { json = await res.json(); } catch {}
+  if (!res.ok || !json || json.ok === false) {
+    const err = json && json.error;
+    const e = new Error(err ? `${err.code}: ${err.message}` : `HTTP ${res.status}`);
+    e.status = res.status; e.payload = json; throw e;
+  }
+  return json;
+}
+const run = async (fn, okMsg) => { try { const r = await fn(); if (okMsg) toast(okMsg, "good"); return r; } catch (e) { toast(e.message, "bad"); return null; } };
+
+/* ---------- generic UI pieces ---------- */
+function badge(v) {
+  const s = String(v ?? "");
+  const good = ["active", "approved", "published", "public", "resolved", "ready", "ok", "true"].includes(s);
+  const bad = ["blocked", "rejected", "hidden", "dismissed", "deleted", "false", "error", "not_found"].includes(s);
+  const warn = ["pending", "paused", "reviewing", "draft", "rate_limited", "unlisted"].includes(s);
+  return h("span", { class: "pill " + (good ? "good" : bad ? "bad" : warn ? "warn" : "") }, s);
+}
+function cell(key, v) {
+  if (v == null) return h("span", { class: "mute" }, "–");
+  if (typeof v === "boolean") return badge(v);
+  if (/^(status|visibility|providerStatus)$/.test(key)) return badge(v);
+  if (typeof v === "object") return h("code", {}, JSON.stringify(v).slice(0, 200));
+  if (/At$|_at$/.test(key) && !isNaN(Date.parse(v))) return new Date(v).toLocaleString();
+  if (/^https?:\/\//.test(String(v))) return h("a", { href: v, target: "_blank", rel: "noopener noreferrer", style: "color:var(--accent)" }, String(v).slice(0, 60));
+  const s = String(v); return s.length > 140 ? s.slice(0, 140) + "…" : s;
+}
+function table(rows, cols, actions) {
+  if (!rows || !rows.length) return h("div", { class: "empty card" }, "No records.");
+  cols = cols || Object.keys(rows[0]).filter(k => !/^(secUid|sec_uid|object_key)$/.test(k)).slice(0, 8);
+  return h("div", { class: "tablewrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, cols.map(c => h("th", {}, c)), actions ? h("th", {}, "") : null)),
+    h("tbody", {}, rows.map(r => h("tr", {},
+      cols.map(c => h("td", {}, cell(c, r[c]))),
+      actions ? h("td", { class: "actions" }, actions(r).map(a => h("button", { class: a.cls || "", onclick: a.fn }, a.label))) : null)))));
+}
+function showJSON(title, data) {
+  const d = $("#dlg"); d.replaceChildren(h("h3", {}, title), h("pre", {}, JSON.stringify(data, null, 2)),
+    h("div", { class: "row" }, h("button", { onclick: () => d.close() }, "Close"))); d.showModal();
+}
+/* form: fields = [{name,label,type,options,required,hint,value}] ; resolves with object or null */
+function form(title, fields, submitLabel = "Submit") {
+  return new Promise(resolve => {
+    const d = $("#dlg"); const inputs = {};
+    const body = fields.map(f => {
+      let el;
+      if (f.type === "select") el = h("select", {}, f.optional ? h("option", { value: "" }, "—") : null,
+        (f.options || []).map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return h("option", { value: v, selected: f.value === v }, l); }));
+      else if (f.type === "textarea" || f.type === "json") el = h("textarea", {}, f.value ?? "");
+      else if (f.type === "checkbox") el = h("input", { type: "checkbox", checked: !!f.value });
+      else el = h("input", { type: f.type === "datetime" ? "datetime-local" : (f.type || "text"), value: f.value ?? "" });
+      inputs[f.name] = el;
+      return f.type === "checkbox"
+        ? h("label", { class: "chk" }, el, f.label)
+        : [h("label", {}, f.label + (f.required ? " *" : "")), el, f.hint ? h("div", { class: "hint" }, f.hint) : null];
+    });
+    const err = h("div", { class: "hint", style: "color:var(--bad)" });
+    const cancel = () => { d.close(); resolve(null); };
+    const submit = () => {
+      const out = {};
+      try {
+        for (const f of fields) {
+          const el = inputs[f.name]; let v;
+          if (f.type === "checkbox") v = el.checked;
+          else {
+            v = el.value.trim();
+            if (v === "") { if (f.required) throw new Error(f.label + " is required"); if (f.nullable && f.value) v = null; else continue; }
+            else if (f.type === "number") v = Number(v);
+            else if (f.type === "datetime") v = new Date(v).toISOString();
+            else if (f.type === "json") v = JSON.parse(v);
+          }
+          out[f.name] = v;
+        }
+      } catch (e) { err.textContent = e.message; return; }
+      d.close(); resolve(out);
+    };
+    d.replaceChildren(h("h3", { style: "margin-top:0" }, title), body, err,
+      h("div", { class: "row" }, h("button", { onclick: cancel }, "Cancel"), h("button", { class: "primary", onclick: submit }, submitLabel)));
+    d.onclose = () => resolve(null); d.showModal();
+  });
+}
+const confirmBox = async (msg) => { const r = await form("Confirm", [{ name: "x", label: msg, type: "checkbox" }], "Do it"); return !!(r && r.x); };
+const hintReason = "At least 5 characters; stored in the audit log.";
+
+/* ---------- sections ---------- */
+const main = () => $("#main");
+const lists = { categories: [], ranks: [] };
+async function loadRefs() {
+  const [c, r] = await Promise.all([api("GET", "/api/admin/categories").catch(() => null), api("GET", "/api/admin/ranks").catch(() => null)]);
+  lists.categories = (c && c.data) || []; lists.ranks = (r && r.data) || [];
+}
+const catOptions = () => lists.categories.map(c => [c.id, c.name]);
+const rankOptions = () => lists.ranks.map(r => [r.id, r.name]);
+
+function pager(state, reload) {
+  return h("span", {}, h("button", { onclick: () => { state.offset = Math.max(0, state.offset - state.limit); reload(); } }, "‹ Prev"),
+    " ", h("span", { class: "mute" }, `${state.offset + 1}–${state.offset + state.limit}`), " ",
+    h("button", { onclick: () => { state.offset += state.limit; reload(); } }, "Next ›"));
+}
+function section(title, ...controls) { return h("div", { class: "bar" }, h("h2", {}, title), controls); }
+
+const SECTIONS = {
+  Overview: async () => {
+    const out = h("div", { class: "grid" });
+    main().replaceChildren(section("Overview"), out);
+    const calls = [["Admin", "/api/admin/me"], ["Health", "/api/health"], ["Database", "/api/health/db"], ["TikTok scraper", "/api/health/tiktok"], ["Version", "/api/version"]];
+    for (const [name, path] of calls) {
+      const card = h("div", { class: "card" }, h("b", {}, name), h("pre", { style: "margin-top:8px" }, "loading…")); out.append(card);
+      api("GET", path).then(r => card.querySelector("pre").textContent = JSON.stringify(r.data, null, 2))
+        .catch(e => card.querySelector("pre").textContent = e.message);
+    }
+  },
+
+  "TikTok creators": async () => {
+    const st = { limit: 30, offset: 0, status: "" };
+    const load = async () => {
+      const q = new URLSearchParams({ limit: st.limit, offset: st.offset }); if (st.status) q.set("status", st.status);
+      const r = await run(() => api("GET", "/api/admin/tiktok-creators?" + q)); if (!r) return;
+      body.replaceChildren(table(r.data, ["username", "displayName", "status", "followers", "following", "videoCount", "providerStatus", "providerMessage", "lastSyncedAt", "createdAt"], row => [
+        { label: "Refresh", fn: async () => { await run(() => api("POST", `/api/admin/tiktok-creators/${row.id}/refresh`), "Refreshed"); load(); } },
+        { label: "Edit", fn: async () => {
+          const v = await form("Edit @" + row.username, [
+            { name: "displayName", label: "Display name", value: row.displayName, nullable: true },
+            { name: "notes", label: "Notes", type: "textarea", value: row.notes, nullable: true },
+            { name: "status", label: "Status", type: "select", options: ["active", "paused", "blocked"], value: row.status }], "Save");
+          if (v) { await run(() => api("PATCH", `/api/admin/tiktok-creators/${row.id}`, v), "Saved"); load(); } } },
+        { label: "Details", fn: () => showJSON("@" + row.username, row) },
+        { label: "Block", cls: "danger", fn: async () => { if (await confirmBox("Block @" + row.username + "? (soft delete, status=blocked)")) { await run(() => api("DELETE", `/api/admin/tiktok-creators/${row.id}`), "Blocked"); load(); } } }
+      ]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("TikTok creators",
+      h("button", { class: "primary", onclick: async () => {
+        const v = await form("Add TikTok creator", [
+          { name: "username", label: "TikTok username", required: true, hint: "With or without @" },
+          { name: "displayName", label: "Display name" }, { name: "notes", label: "Notes", type: "textarea" }], "Add");
+        if (v) { await run(() => api("POST", "/api/admin/tiktok-creators", v), "Creator added"); load(); } } }, "+ Add creator"),
+      h("select", { style: "width:auto", onchange: e => { st.status = e.target.value; st.offset = 0; load(); } },
+        ["", "active", "paused", "blocked"].map(s => h("option", { value: s }, s || "all statuses"))),
+      pager(st, load), h("button", { onclick: load }, "Reload")), body);
+    load();
+  },
+
+  Profiles: async () => {
+    const st = { limit: 30, offset: 0 };
+    await loadRefs();
+    const load = async () => {
+      const r = await run(() => api("GET", `/api/admin/profiles?limit=${st.limit}&offset=${st.offset}`)); if (!r) return;
+      body.replaceChildren(table(r.data, ["displayName", "slug", "status", "visibility", "createdAt"], row => [
+        { label: "Edit", fn: async () => {
+          const v = await form("Edit " + row.displayName, [
+            { name: "displayName", label: "Display name", value: row.displayName },
+            { name: "bio", label: "Bio", type: "textarea", nullable: true },
+            { name: "visibility", label: "Visibility", type: "select", options: ["public", "unlisted", "hidden"], value: row.visibility }], "Save");
+          if (v) { await run(() => api("PATCH", `/api/admin/profiles/${row.id}`, v), "Saved"); load(); } } },
+        { label: "Verify", fn: async () => {
+          const v = await form("Verify " + row.displayName, [
+            { name: "type", label: "Verification type", type: "select", options: ["identity", "campus"] },
+            { name: "reason", label: "Reason", type: "textarea", required: true }], "Verify");
+          if (v) { const t = v.type; delete v.type; await run(() => api("POST", `/api/admin/profiles/${row.id}/verify/${t}`, v), "Verified"); load(); } } },
+        { label: "+Category", fn: async () => {
+          const v = await form("Add category", [{ name: "categoryId", label: "Category", type: "select", options: catOptions(), required: true }], "Add");
+          if (v) await run(() => api("POST", `/api/admin/profiles/${row.id}/categories`, v), "Category added"); } },
+        { label: "−Category", cls: "danger", fn: async () => {
+          const v = await form("Remove category", [{ name: "categoryId", label: "Category", type: "select", options: catOptions(), required: true }], "Remove");
+          if (v) await run(() => api("DELETE", `/api/admin/profiles/${row.id}/categories/${v.categoryId}`), "Category removed"); } },
+        { label: "Assign rank", fn: async () => {
+          const v = await form("Assign rank", [
+            { name: "rankId", label: "Rank", type: "select", options: rankOptions(), required: true },
+            { name: "reason", label: "Reason", type: "textarea", required: true, hint: hintReason },
+            { name: "expiresAt", label: "Expires (optional)", type: "datetime" }], "Assign");
+          if (v) await run(() => api("POST", `/api/admin/profiles/${row.id}/ranks`, v), "Rank assigned"); } }
+      ]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Profiles",
+      h("button", { class: "primary", onclick: async () => {
+        const v = await form("New profile", [
+          { name: "displayName", label: "Display name", required: true }, { name: "slug", label: "Slug (optional)" },
+          { name: "bio", label: "Bio", type: "textarea" },
+          { name: "status", label: "Status", type: "select", options: ["pending", "active"], value: "pending" }], "Create");
+        if (v) { await run(() => api("POST", "/api/admin/profiles", v), "Profile created"); load(); } } }, "+ New profile"),
+      pager(st, load), h("button", { onclick: load }, "Reload")), body);
+    load();
+  },
+
+  Categories: async () => {
+    const load = async () => {
+      const r = await run(() => api("GET", "/api/admin/categories")); if (!r) return; lists.categories = r.data;
+      body.replaceChildren(table(r.data, ["name", "slug", "description", "isActive", "displayOrder"], row => [
+        { label: "Edit", fn: async () => {
+          const v = await form("Edit category", [
+            { name: "name", label: "Name", value: row.name },
+            { name: "description", label: "Description", type: "textarea", value: row.description, nullable: true },
+            { name: "displayOrder", label: "Display order", type: "number", value: row.displayOrder ?? row.display_order },
+            { name: "isActive", label: "Active", type: "checkbox", value: row.isActive ?? row.is_active }], "Save");
+          if (v) { await run(() => api("PATCH", `/api/admin/categories/${row.id}`, v), "Saved"); load(); } } }]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Categories", h("button", { class: "primary", onclick: async () => {
+      const v = await form("New category", [{ name: "name", label: "Name", required: true }, { name: "description", label: "Description", type: "textarea" },
+        { name: "displayOrder", label: "Display order", type: "number", value: 0 }], "Create");
+      if (v) { await run(() => api("POST", "/api/admin/categories", v), "Category created"); load(); } } }, "+ New category")), body);
+    load();
+  },
+
+  Ranks: async () => {
+    const load = async () => {
+      const r = await run(() => api("GET", "/api/admin/ranks")); if (!r) return; lists.ranks = r.data;
+      body.replaceChildren(table(r.data, null, row => [
+        { label: "Edit", fn: async () => {
+          const v = await form("Edit rank", [
+            { name: "name", label: "Name", value: row.name },
+            { name: "description", label: "Description", type: "textarea", value: row.description, nullable: true },
+            { name: "badgeColor", label: "Badge color (#rrggbb)", value: row.badge_color ?? row.badgeColor },
+            { name: "textColor", label: "Text color (#rrggbb)", value: row.text_color ?? row.textColor },
+            { name: "icon", label: "Icon", value: row.icon, nullable: true },
+            { name: "isActive", label: "Active", type: "checkbox", value: row.is_active ?? row.isActive }], "Save");
+          if (v) { await run(() => api("PATCH", `/api/admin/ranks/${row.id}`, v), "Saved"); load(); } } }]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Ranks", h("button", { class: "primary", onclick: async () => {
+      const v = await form("New rank", [{ name: "name", label: "Name", required: true }, { name: "description", label: "Description", type: "textarea" },
+        { name: "badgeColor", label: "Badge color", required: true, value: "#5b9cff" }, { name: "textColor", label: "Text color", required: true, value: "#ffffff" },
+        { name: "icon", label: "Icon" }], "Create");
+      if (v) { await run(() => api("POST", "/api/admin/ranks", v), "Rank created"); load(); } } }, "+ New rank")), body);
+    load();
+  },
+
+  Awards: async () => {
+    const load = async () => {
+      const r = await run(() => api("GET", "/api/admin/awards")); if (!r) return;
+      body.replaceChildren(table(r.data, ["name", "category", "status", "nomination_starts_at", "nomination_ends_at", "voting_starts_at", "voting_ends_at", "published_at"], row => [
+        { label: "Status", fn: async () => {
+          const v = await form("Award status: " + row.name, [
+            { name: "status", label: "Status", type: "select", options: ["draft", "nominations", "voting", "published", "closed"], value: row.status },
+            { name: "reason", label: "Reason", type: "textarea", required: true, hint: hintReason }], "Update");
+          if (v) { await run(() => api("PATCH", `/api/admin/awards/${row.id}/status`, v), "Status updated"); load(); } } },
+        { label: "Nominations", fn: async () => {
+          const n = await run(() => api("GET", `/api/admin/awards/${row.id}/nominations`)); if (!n) return;
+          noms.replaceChildren(h("h3", {}, "Nominations: " + row.name), table(n.data, ["id", "nomineeName", "status", "review_note", "created_at"], nom => [
+            { label: "Review", fn: async () => {
+              const v = await form("Review nomination", [
+                { name: "status", label: "Decision", type: "select", options: ["approved", "rejected"] },
+                { name: "reviewNote", label: "Note", type: "textarea", required: true }], "Save");
+              if (v) await run(() => api("PATCH", `/api/admin/awards/nominations/${nom.id}`, v), "Reviewed"); } }]));
+          noms.scrollIntoView(); } },
+        { label: "Winners", fn: async () => {
+          const v = await form("Publish winners: " + row.name, [
+            { name: "winners", label: "Winners (JSON)", type: "json", required: true, value: '[{"profileId":"<uuid>","place":1}]' },
+            { name: "reason", label: "Reason", type: "textarea", required: true }], "Publish");
+          if (v) await run(() => api("POST", `/api/admin/awards/${row.id}/winners`, v), "Winners published"); } }
+      ]));
+    };
+    const body = h("div"), noms = h("div", { style: "margin-top:16px" });
+    main().replaceChildren(section("Awards", h("button", { class: "primary", onclick: async () => {
+      const v = await form("New award", [{ name: "name", label: "Name", required: true }, { name: "description", label: "Description", type: "textarea" },
+        { name: "category", label: "Category" },
+        { name: "nominationStartsAt", label: "Nominations start", type: "datetime" }, { name: "nominationEndsAt", label: "Nominations end", type: "datetime" },
+        { name: "votingStartsAt", label: "Voting start", type: "datetime" }, { name: "votingEndsAt", label: "Voting end", type: "datetime" }], "Create");
+      if (v) { await run(() => api("POST", "/api/admin/awards", v), "Award created"); load(); } } }, "+ New award")), body, noms);
+    load();
+  },
+
+  "Discover posts": async () => {
+    const load = async () => {
+      const r = await run(() => api("GET", "/api/admin/discover/posts?limit=48")); if (!r) return;
+      body.replaceChildren(table(r.data, ["creatorHandle", "caption", "mediaType", "status", "visibility", "sourceUrl", "createdAt"], row => [
+        { label: "Review", fn: async () => {
+          const v = await form("Moderate post", [
+            { name: "action", label: "Action", type: "select", options: ["approve", "reject", "hide", "restore"] },
+            { name: "reason", label: "Reason", type: "textarea", required: true, hint: hintReason }], "Apply");
+          if (v) { await run(() => api("POST", `/api/admin/discover/posts/${row.id}/review`, v), "Done"); load(); } } },
+        { label: "Delete", cls: "danger", fn: async () => {
+          const v = await form("Delete post", [{ name: "reason", label: "Reason", type: "textarea", required: true, hint: hintReason },
+            { name: "confirm", label: "I confirm deletion", type: "checkbox" }], "Delete");
+          if (v && v.confirm) { await run(() => api("DELETE", `/api/admin/discover/posts/${row.id}`, v), "Deleted"); load(); } } }]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Discover posts", h("button", { onclick: load }, "Reload")), body); load();
+  },
+
+  "Discover reports": async () => {
+    const load = async () => {
+      const r = await run(() => api("GET", "/api/admin/discover/reports?limit=48")); if (!r) return;
+      body.replaceChildren(table(r.data, ["report_type", "description", "status", "caption", "sourceUrl", "created_at"], row => [
+        { label: "Resolve", fn: async () => {
+          const v = await form("Review report", [
+            { name: "status", label: "Status", type: "select", options: ["reviewing", "resolved", "dismissed"] },
+            { name: "resolutionNote", label: "Resolution note", type: "textarea", required: true },
+            { name: "postAction", label: "Post action", type: "select", options: ["none", "hide", "delete"] },
+            { name: "confirm", label: "Confirm (required for delete)", type: "checkbox" }], "Save");
+          if (v) { await run(() => api("PATCH", `/api/admin/discover/reports/${row.id}`, v), "Report updated"); load(); } } }]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Discover reports", h("button", { onclick: load }, "Reload")), body); load();
+  },
+
+  "Discover submissions": async () => {
+    const load = async () => {
+      const r = await run(() => api("GET", "/api/admin/discover/submissions?limit=48")); if (!r) return;
+      body.replaceChildren(table(r.data, ["creator_name", "creator_handle", "caption", "media_type", "mimeType", "fileSize", "status", "created_at"], row => [
+        row.media_asset_id ? { label: "Preview", fn: async () => {
+          const blob = await run(() => api("GET", `/api/admin/discover/media/${row.media_asset_id}`, undefined, { blob: true })); if (!blob) return;
+          const url = URL.createObjectURL(blob); const d = $("#dlg");
+          const media = blob.type.startsWith("video") ? h("video", { src: url, controls: true, class: "thumb" }) : h("img", { src: url, class: "thumb" });
+          d.replaceChildren(media, h("div", { class: "row" }, h("button", { onclick: () => d.close() }, "Close"))); d.onclose = () => URL.revokeObjectURL(url); d.showModal(); } } : null,
+        { label: "Review", fn: async () => {
+          const v = await form("Review submission", [
+            { name: "status", label: "Decision", type: "select", options: ["approved", "rejected"] },
+            { name: "reviewNote", label: "Note", type: "textarea", required: true }], "Save");
+          if (v) { await run(() => api("PATCH", `/api/admin/discover/submissions/${row.id}`, v), "Reviewed"); load(); } } }
+      ].filter(Boolean)));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Discover submissions (pending)", h("button", { onclick: load }, "Reload")), body); load();
+  },
+
+  "Creator requests": async () => {
+    await loadRefs();
+    const load = async () => {
+      const r = await run(() => api("GET", "/api/admin/discover/creator-requests?limit=48")); if (!r) return;
+      body.replaceChildren(table(r.data, ["username", "platform", "display_name", "status", "created_at"], row => [
+        { label: "Review", fn: async () => {
+          const v = await form("Review creator request: " + row.username, [
+            { name: "status", label: "Decision", type: "select", options: ["approved", "rejected"] },
+            { name: "reviewNote", label: "Note", type: "textarea", required: true },
+            { name: "categoryId", label: "Category (required to approve)", type: "select", options: catOptions(), optional: true },
+            { name: "displayName", label: "Display name override" }], "Save");
+          if (v) { await run(() => api("PATCH", `/api/admin/discover/creator-requests/${row.id}`, v), "Reviewed"); load(); } } }]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Creator requests (pending)", h("button", { onclick: load }, "Reload")), body); load();
+  },
+
+  "Audit logs": async () => {
+    const st = { limit: 50, offset: 0 };
+    const load = async () => {
+      const r = await run(() => api("GET", `/api/admin/audit-logs?limit=${st.limit}&offset=${st.offset}`)); if (!r) return;
+      body.replaceChildren(table(r.data, ["createdAt", "actor", "action", "targetType", "targetId", "reason", "requestId"]));
+    };
+    const body = h("div");
+    main().replaceChildren(section("Audit logs", pager(st, load), h("button", { onclick: load }, "Reload")), body); load();
+  }
+};
+
+/* ---------- boot ---------- */
+function buildNav() {
+  const nav = $("#nav"); nav.replaceChildren();
+  for (const name of Object.keys(SECTIONS)) {
+    nav.append(h("button", { onclick: e => {
+      nav.querySelectorAll("button").forEach(b => b.classList.remove("active")); e.currentTarget.classList.add("active");
+      safeStore.set("hof.section", name); SECTIONS[name]();
+    } }, name));
+  }
+}
+async function connect() {
+  BASE = $("#base").value.trim().replace(/\/+$/, ""); KEY = $("#key").value.trim();
+  if (!/^https?:\/\//.test(BASE) || !KEY) return toast("Enter a full base URL (https://…) and the admin key", "bad");
+  safeLocal.set("hof.base", BASE);
+  const me = await run(() => api("GET", "/api/admin/me"));
+  const st = $("#status");
+  if (!me) { st.textContent = "not connected"; st.className = "pill bad"; return; }
+  st.textContent = `connected · ${me.data.permissions.length} permissions`; st.className = "pill good";
+  if ($("#remember").checked) safeStore.set("hof.key", KEY); else safeStore.del("hof.key");
+  buildNav();
+  const last = safeStore.get("hof.section"); const first = SECTIONS[last] ? last : "Overview";
+  [...$("#nav").children].find(b => b.textContent === first).click();
+}
+$("#connect").addEventListener("click", connect);
+$("#key").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+$("#base").value = safeLocal.get("hof.base") || "https://hof-base.talesapi.workers.dev";
+const savedKey = safeStore.get("hof.key"); if (savedKey) { $("#key").value = savedKey; $("#remember").checked = true; connect(); }
+</script>
+</body>
+</html>
