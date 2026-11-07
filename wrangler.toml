@@ -1,23 +1,42 @@
-# Cloudflare Worker config.
-#
-# This file lives at the REPOSITORY ROOT on purpose: Cloudflare's build
-# system runs `npx wrangler deploy` from the repo root, so wrangler must
-# find its config there. The TypeScript source stays in worker/src/ to keep
-# it separate from the Python package.
+name = "hof-base"
+main = "src/index.ts"
+compatibility_date = "2026-11-06"
+compatibility_flags = ["nodejs_compat"]
 
-name = "hof"
-main = "worker/src/index.ts"
-compatibility_date = "2025-01-01"
-workers_dev = true
+[vars]
+APP_ENV = "development"
+LOG_LEVEL = "info"
+RATE_LIMIT_ENABLED = "true"
+TIKTOK_SCRAPER_BASE_URL = "https://hof.talesapi.workers.dev"
+TIKTOK_PROFILE_PATH = "/api/profile"
+TIKTOK_POSTS_PATH = "/api/profile/posts"
+TIKTOK_SYNC_BATCH_SIZE = "10"
+TIKTOK_SYNC_ENABLED = "true"
 
-# Optional shared secret. If you set it, every request must send it:
-#   npx wrangler secret put API_KEY
-# and callers pass it as ?key=..., X-API-Key: ..., or Authorization: Bearer ...
-# (leave unset for a public demo worker)
+[[services]]
+binding = "TIKTOK_SCRAPER"
+service = "hof"
 
-[observability]
-enabled = true
+[triggers]
+crons = ["*/5 * * * *"]
 
-# The free plan allows 50 subrequests per request; one TikTok page = one
-# subrequest, and MAX_ITEMS in worker/src/index.ts keeps batches inside that.
-# Note: cpu_ms = 30000 needs a paid plan - the free tier allows only 10 ms.
+[env.staging]
+name = "hof-base-staging"
+vars = { APP_ENV = "staging", LOG_LEVEL = "info", RATE_LIMIT_ENABLED = "true", TIKTOK_SCRAPER_BASE_URL = "https://hof.talesapi.workers.dev", TIKTOK_PROFILE_PATH = "/api/profile", TIKTOK_POSTS_PATH = "/api/profile/posts", TIKTOK_SYNC_BATCH_SIZE = "10", TIKTOK_SYNC_ENABLED = "true" }
+
+[env.production]
+name = "hof-base"
+vars = { APP_ENV = "production", LOG_LEVEL = "warn", RATE_LIMIT_ENABLED = "true", TIKTOK_SCRAPER_BASE_URL = "https://hof.talesapi.workers.dev", TIKTOK_PROFILE_PATH = "/api/profile", TIKTOK_POSTS_PATH = "/api/profile/posts", TIKTOK_SYNC_BATCH_SIZE = "10", TIKTOK_SYNC_ENABLED = "true" }
+
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
+[env.production.triggers]
+crons = ["*/5 * * * *"]
+
+[[env.staging.services]]
+binding = "TIKTOK_SCRAPER"
+service = "hof"
+
+[[env.production.services]]
+binding = "TIKTOK_SCRAPER"
+service = "hof"
