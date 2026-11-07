@@ -119,6 +119,7 @@ discover.get("/trending", async c => {
       FROM hof_post_metric_snapshots WHERE captured_at<=now()-interval '24 hours'
       ORDER BY post_id,captured_at DESC
     )
+    SELECT * FROM (
     SELECT p.id,p.creator_name AS "creatorName",p.creator_handle AS "creatorHandle",
       p.caption,p.source_url AS "sourceUrl",p.thumbnail_media_id AS "thumbnailMediaId",p.media_asset_id AS "mediaAssetId",
       p.media_type AS "mediaType",p.published_at AS "publishedAt",
@@ -129,11 +130,12 @@ discover.get("/trending", async c => {
     FROM hof_discover_posts p JOIN latest l ON l.post_id=p.id JOIN baseline b ON b.post_id=p.id
     WHERE p.status='approved' AND p.visibility='public' AND p.deleted_at IS NULL
       AND l.captured_at>now()-interval '7 days'
+    ) t
     ORDER BY ("likesGained"+("commentsGained"*3)+("sharesGained"*4)+("playsGained"/10)) DESC
     LIMIT $1`,[pageSize(c.req.query("limit"))]);
     const origin=new URL(c.req.url).origin;
     return ok(c,rows.map((r:any)=>({...r,thumbnailUrl:r.thumbnailMediaId?`${origin}/api/media/${r.thumbnailMediaId}`:(r.mediaType==="image"&&r.mediaAssetId?`${origin}/api/media/${r.mediaAssetId}`:null)})));
-  }catch{return fail(c,503,"DATABASE_UNAVAILABLE","Discover trending unavailable.");}
+  }catch(error){console.error("discover_trending_failed",error instanceof Error?error.message:String(error));return fail(c,503,"DATABASE_UNAVAILABLE","Discover trending unavailable.");}
 });
 
 // Anyone may submit a post suggestion; it remains private until admin approval.
