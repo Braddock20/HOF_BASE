@@ -57,7 +57,7 @@ export DATABASE_URL='postgresql://...'
 npm run db:migrate
 ```
 
-The migration creates HOF tables, indexes, base sections, categories, permissions and role bundles. Admin routes do not require an OIDC subject or an `hof_admins` row in this release. Audit rows identify the actor as `admin-api-key` and leave `actor_admin_id` null.
+The migrations create HOF tables, indexes, base sections, categories, permissions and role bundles, then add the independent TikTok creator registry and awards APIs. Admin routes do not require an OIDC subject or an `hof_admins` row in this release. Audit rows identify the actor as `admin-api-key` and leave `actor_admin_id` null.
 
 Test migrations against a staging database before production. The migration script uses the Neon serverless driver for HTTP SQL execution.
 
@@ -88,7 +88,7 @@ All admin routes require the header. Missing/invalid keys receive `401`; a missi
 - `GET /api/discover/feed` returns 24 items by default and uses `next_cursor` to continue the same feed session. The server stores a randomized post-ID snapshot so page ordering does not shift while a person scrolls. Feed sessions expire after two days.
 - `GET /api/discover/latest`, `/posts/:id`, `/categories`, and `/trending` are separate Discover read APIs.
 - `POST /api/discover/reports` submits a post report. `POST /api/discover/submissions` submits a TikTok/external post link. `POST /api/discover/creator-requests` suggests a creator. `POST /api/discover/seen` records visible post IDs against a hashed, pseudonymous visitor key; the frontend should also keep seen IDs locally for offline rotation. Send `X-HOF-Visitor` with feed requests to exclude previously seen posts when a new feed session is created. Users cannot assign HOF categories or verification.
-- `POST /api/discover/uploads` accepts first-party images and short videos up to 8 MB and stores them in the private B2 bucket. Uploads stay private until an admin approves the submission.
+- `POST /api/discover/uploads` accepts first-party images and short videos up to 8 MB and stores them in the private B2 bucket. Per the current product rule, successful first-party uploads publish immediately; admins handle reports and post-publication hide/delete/restore actions. TikTok/external submissions remain queued for admin review.
 - Admin review routes are under `/api/admin/discover/*`. Creator approval requires an admin-selected `categoryId`.
 - `DELETE /api/admin/discover/posts/:id` permanently removes a post and attempts to delete its B2 media objects. `POST /api/admin/profiles/:id/remove` is a soft removal; `DELETE /api/admin/profiles/:id` is the confirmed permanent-delete route.
 - Discover JSON never exposes B2 temporary download URLs or raw TikTok cover URLs. B2 media is delivered through stable URLs such as `/api/media/{mediaId}`. The Worker privately authenticates to B2 and streams the object; B2 credentials and authorization tokens never reach the browser. TikTok video posts remain hosted/rendered by TikTok and HOF stores their post ID and canonical post URL. When B2 is configured, TikTok cover images are cached in B2 and delivered through stable HOF URLs. If a cover cannot be cached, the feed returns `thumbnail_url: null` rather than an expiring provider URL.
@@ -153,6 +153,41 @@ Admin (all require `X-API-Key`):
 
 ## Known implementation gaps
 
-This is a backend foundation, not a production certification. Run migrations 0001 and 0002 before deploying this version. Verify the mother scraper route paths and batch response shape before enabling scheduled collection. Public submissions currently have no verified student login; treat submitter references as untrusted hints, enforce edge rate limiting/Turnstile before launch, and keep all submissions pending until admin review. The 8 MB B2 upload endpoint is a starter path; larger videos need direct B2 multipart upload authorization. B2 stable URLs depend on the HOF Worker domain remaining active and B2 credentials retaining read access; the underlying B2 download authorization is refreshed server-side and is never sent to clients. Dedicated route slices still remain for verification revocation, rank revocation, section management, complete admin/key rotation management, award lifecycle and voting, claims, and durable distributed rate limiting. Trending remains empty until reliable metric snapshots and a documented algorithm exist. Instagram/YouTube adapters are not faked. Review platform terms before storing or rehosting profile media.
+This is a backend foundation, not a production certification. Run migrations 0001, 0002 and 0003 before deploying this version. Verify the mother scraper route paths and batch response shape before enabling scheduled collection. Public submissions currently have no verified student login; treat submitter references as untrusted hints, enforce edge rate limiting/Turnstile before launch, and keep all submissions pending until admin review. The 8 MB B2 upload endpoint is a starter path; larger videos need direct B2 multipart upload authorization. B2 stable URLs depend on the HOF Worker domain remaining active and B2 credentials retaining read access; the underlying B2 download authorization is refreshed server-side and is never sent to clients. Dedicated route slices still remain for verification revocation, rank revocation, section management, profile claims, per-admin account/key rotation, and durable distributed rate limiting. Public voting and nomination submission remain disabled until verified end-user identity and abuse controls exist. Independent TikTok creator profile refresh is implemented, but independent-creator post ingestion is not yet connected to the scheduled queue. Trending remains empty until reliable metric snapshots and a documented algorithm exist. Instagram/YouTube adapters are not faked. Review platform terms before storing or rehosting profile media.
 
 The current rate limiter is per-isolate only. Add Cloudflare WAF/rate limiting or a shared durable limiter before public launch. Keep the master API key in a secret manager and restrict who can read or deploy Worker secrets.
+
+## Independent TikTok Creator Manager (v1.2.0)
+
+This registry is deliberately separate from `hof_profiles` and `hof_social_accounts`. An admin can register a TikTok handle without creating a HOF member/login/profile:
+
+- `GET /api/admin/tiktok-creators?limit=30&offset=0&status=active`
+- `POST /api/admin/tiktok-creators` body: `{"username":"creator_handle","displayName":"Optional display name","notes":"Optional admin note"}`
+- `GET /api/admin/tiktok-creators/:id`
+- `POST /api/admin/tiktok-creators/:id/refresh` (fetches profile metadata and records a metric snapshot)
+- `PATCH /api/admin/tiktok-creators/:id` (displayName, notes, status: active/paused/blocked)
+- `DELETE /api/admin/tiktok-creators/:id` (soft deactivation; it does not erase history)
+
+All routes require `X-API-Key`. Permissions are `creator.manage` and `creator.sync`. The independent registry currently supports account registration and profile metadata refresh. Its records are **not yet wired into the legacy scheduled post-import queue**, which still selects TikTok accounts linked to active HOF profiles. Do not turn on `TIKTOK_SYNC_ENABLED` expecting the independent registry to import videos; that adapter is a remaining backend task.
+
+## Awards APIs
+
+Public:
+- `GET /api/awards`
+- `GET /api/awards/:slug` (includes approved nominees and published winners)
+
+Admin:
+- `GET /api/admin/awards`
+- `POST /api/admin/awards`
+- `PATCH /api/admin/awards/:id/status`
+- `GET /api/admin/awards/:id/nominations`
+- `PATCH /api/admin/awards/nominations/:id`
+- `POST /api/admin/awards/:id/winners`
+
+Award creation and winner publication require an audit reason. Public voting is intentionally not exposed: the current project has no verified end-user authentication or abuse-resistant voter identity. The existing `hof_votes` table must not be exposed through a public endpoint until that identity layer exists.
+
+## Configuration and migration 0003
+
+The ZIP includes `wrangler.toml`, `.env.example`, and `.dev.vars.example`. The scraper base URL and endpoint paths are ordinary configuration; Neon, admin key, scraper API key (if used), and B2 credentials remain Cloudflare secrets. Never place real secrets in Wrangler `[vars]`, `.env.example`, or source control.
+
+Run `npm run db:migrate` after backing up the database. The migration runner now applies `0001_initial`, `0002_discover`, and `0003_creator_manager_awards` in order. `TIKTOK_SYNC_ENABLED` remains `false` in all Wrangler environments.
