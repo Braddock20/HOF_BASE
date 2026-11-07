@@ -1,6 +1,7 @@
 import type { Env } from "./types";
 import { db } from "./db";
 import { discoverTikTok, normalizeTikTok, scraperFetch } from "./tiktok";
+import { refreshDueCreators } from "./creator-sync";
 import { b2Configured, uploadPrivateB2Object } from "./b2";
 
 type SocialAccount = {
@@ -256,7 +257,7 @@ async function batchProfiles(env: Env, accounts: SocialAccount[]): Promise<Map<s
   return result;
 }
 
-async function refreshProfile(env: Env, account: SocialAccount, q: ReturnType<typeof db>, batch?: Map<string, ReturnType<typeof normalizeTikTok>>) {
+export async function refreshProfile(env: Env, account: SocialAccount, q: ReturnType<typeof db>, batch?: Map<string, ReturnType<typeof normalizeTikTok>>) {
   const metadata = batch?.get(normalizedHandle(account.username)) || await discoverTikTok(env, account.username);
   if (metadata.providerStatus !== "ok" && metadata.providerStatus !== "partial") {
     throw new Error(`TikTok profile status: ${metadata.providerStatus}`);
@@ -365,5 +366,7 @@ export async function runScheduledCollection(env: Env) {
         finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
     }
   }
-  return { metadataChecked: checked, metadataErrors, queued, slowPostPull: postsResult };
+  let creators: unknown = null;
+  try { creators = await refreshDueCreators(env, 5); } catch { creators = "error"; }
+  return { metadataChecked: checked, metadataErrors, queued, slowPostPull: postsResult, creators };
 }
