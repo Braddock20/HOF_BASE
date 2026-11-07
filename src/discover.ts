@@ -69,7 +69,8 @@ discover.get("/feed", async c => {
       aspect_ratio:p.aspectRatio, published_at:p.publishedAt,
       engagement:{likes:p.likes,comments:p.comments,shares:p.shares,saves:p.saves,plays:p.plays,reposts:p.reposts},
       thumbnail_url:p.thumbnailMediaId ? `${new URL(c.req.url).origin}/api/media/${p.thumbnailMediaId}` :
-        (p.mediaType==="image" && p.mediaAssetId ? `${new URL(c.req.url).origin}/api/media/${p.mediaAssetId}` : null),
+        (p.mediaType==="image" && p.mediaAssetId ? `${new URL(c.req.url).origin}/api/media/${p.mediaAssetId}` : (p.externalThumbnailUrl || null)),
+      external_thumbnail_url:p.externalThumbnailUrl || null,
       media_url:p.mediaAssetId ? `${new URL(c.req.url).origin}/api/media/${p.mediaAssetId}` : null,
       embed_url:p.source==="tiktok" && p.sourcePostId ? `https://www.tiktok.com/player/v1/${encodeURIComponent(p.sourcePostId)}` : null,
       playable:p.mediaType==="video"
