@@ -20,7 +20,6 @@ export const securityHeaders: MiddlewareHandler<HonoEnv> = async (c, next) => {
   if (!c.res.headers.has("Cache-Control")) c.header("Cache-Control", "no-store");
 };
 
-// No browser frontend is included in this release, so CORS is intentionally disabled.
 
 export const basicRateLimit: MiddlewareHandler<HonoEnv> = async (c, next) => {
   // Per-isolate guard only. Production deployments should additionally enable
@@ -42,14 +41,25 @@ export const basicRateLimit: MiddlewareHandler<HonoEnv> = async (c, next) => {
 
 export const restrictedCors: MiddlewareHandler<HonoEnv> = async (c, next) => {
   const origin = c.req.header("Origin");
+  const path = new URL(c.req.url).pathname;
+  const isAdmin = path === "/api/admin" || path.startsWith("/api/admin/");
+
+  // Public API: open to any page (hosted, localhost, or file:// where Origin is "null").
+  // Safe because no cookies/credentials are used; Access-Control-Allow-Credentials is never sent.
+  // Admin API: only origins listed in CORS_ORIGINS, and the admin key header is never allowed cross-origin otherwise.
   const allowed = (c.env.CORS_ORIGINS || "").split(",").map(x => x.trim()).filter(Boolean);
-  if (origin && allowed.includes(origin)) {
-    c.header("Access-Control-Allow-Origin", origin);
-    c.header("Vary", "Origin");
+  const permitted = !isAdmin || (!!origin && allowed.includes(origin));
+
+  if (permitted) {
+    if (isAdmin) { c.header("Access-Control-Allow-Origin", origin!); c.header("Vary", "Origin"); }
+    else c.header("Access-Control-Allow-Origin", "*");
     c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
-    c.header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, X-API-Key, X-HOF-Visitor");
+    c.header("Access-Control-Allow-Headers", isAdmin
+      ? "Content-Type, X-Request-ID, X-API-Key, X-HOF-Visitor"
+      : "Content-Type, X-Request-ID, X-HOF-Visitor");
+    c.header("Access-Control-Expose-Headers", "X-Request-ID, Retry-After");
     c.header("Access-Control-Max-Age", "600");
   }
-  if (c.req.method === "OPTIONS") return c.body(null, origin && allowed.includes(origin) ? 204 : 403);
+  if (c.req.method === "OPTIONS") return c.body(null, permitted ? 204 : 403);
   await next();
 };
