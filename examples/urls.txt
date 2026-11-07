@@ -1,0 +1,17 @@
+# One video URL per line. Blank lines and lines starting with # are ignored.
+#
+# These are real, public videos (chemistry/education content) that were
+# verified live. Replace them with your own sample, or build a list first:
+#
+#   python -m tiktok_scraper --hashtag booktok --limit 100 --out data/
+#   # then feed the produced CSV's "url" column back in via --urls-file
+#
+# Note: some videos get deleted or made private later, which shows up as a
+# row with status="failed". That is normal and worth reporting in your
+# method section.
+
+https://www.tiktok.com/@tdrchriss/video/7579349675854155026
+https://www.tiktok.com/@tyler1martinez/video/7505360655675952414
+https://www.tiktok.com/@chemisty_no1_nb/video/7699725955639594247
+https://www.tiktok.com/@brokenaxe23/video/7690219156636962081
+https://www.tiktok.com/@mackharrisonn/video/7620218876327939358
