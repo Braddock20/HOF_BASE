@@ -1,3 +1,7 @@
+# HOF API — 1.2.2
+
+This release hardens TikTok profile refresh and API edge handling. It does not require a database migration. TikTok scheduled collection remains disabled unless `TIKTOK_SYNC_ENABLED=true` is deliberately enabled.
+
 # Hall of Fame — HOF API Worker
 
 Backend-only Cloudflare Worker API for the Hall of Fame system. This release contains no frontend and no third-party user/admin identity provider. All `/api/admin/*` routes are protected by one server-side master API key supplied in the `X-API-Key` header.
