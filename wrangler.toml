@@ -21,5 +21,3 @@ enabled = true
 # The free plan allows 50 subrequests per request; one TikTok page = one
 # subrequest, and MAX_ITEMS in worker/src/index.ts keeps batches inside that.
 # Note: cpu_ms = 30000 needs a paid plan - the free tier allows only 10 ms.
-[limits]
-cpu_ms = 30000
