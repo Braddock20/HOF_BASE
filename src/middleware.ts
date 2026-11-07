@@ -40,26 +40,14 @@ export const basicRateLimit: MiddlewareHandler<HonoEnv> = async (c, next) => {
 
 
 export const restrictedCors: MiddlewareHandler<HonoEnv> = async (c, next) => {
-  const origin = c.req.header("Origin");
-  const path = new URL(c.req.url).pathname;
-  const isAdmin = path === "/api/admin" || path.startsWith("/api/admin/");
-
-  // Public API: open to any page (hosted, localhost, or file:// where Origin is "null").
-  // Safe because no cookies/credentials are used; Access-Control-Allow-Credentials is never sent.
-  // Admin API: only origins listed in CORS_ORIGINS, and the admin key header is never allowed cross-origin otherwise.
-  const allowed = (c.env.CORS_ORIGINS || "").split(",").map(x => x.trim()).filter(Boolean);
-  const permitted = !isAdmin || (!!origin && allowed.includes(origin));
-
-  if (permitted) {
-    if (isAdmin) { c.header("Access-Control-Allow-Origin", origin!); c.header("Vary", "Origin"); }
-    else c.header("Access-Control-Allow-Origin", "*");
-    c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
-    c.header("Access-Control-Allow-Headers", isAdmin
-      ? "Content-Type, X-Request-ID, X-API-Key, X-HOF-Visitor"
-      : "Content-Type, X-Request-ID, X-HOF-Visitor");
-    c.header("Access-Control-Expose-Headers", "X-Request-ID, Retry-After");
-    c.header("Access-Control-Max-Age", "600");
-  }
-  if (c.req.method === "OPTIONS") return c.body(null, permitted ? 204 : 403);
+  // One rule for every route (public and admin): any page may call the API, hosted, localhost,
+  // or file:// (Origin "null"). Safe because auth is the X-API-Key header, never cookies, and
+  // Access-Control-Allow-Credentials is never sent, so a third-party page cannot act without the key.
+  c.header("Access-Control-Allow-Origin", "*");
+  c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+  c.header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, X-API-Key, X-HOF-Visitor");
+  c.header("Access-Control-Expose-Headers", "X-Request-ID, Retry-After");
+  c.header("Access-Control-Max-Age", "600");
+  if (c.req.method === "OPTIONS") return c.body(null, 204);
   await next();
 };
