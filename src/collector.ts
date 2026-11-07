@@ -11,6 +11,7 @@ type SocialAccount = {
   displayName: string | null;
   oldVideoCount: number | string | null;
   lastPostSyncAt: string | null;
+  storedPosts?: number | string | null;
 };
 
 const first = (value: any, keys: string[]) => {
@@ -134,6 +135,16 @@ async function pullPosts(env: Env, account: SocialAccount) {
   const root = raw?.data && typeof raw.data === "object" ? raw.data : raw;
   const videos = Array.isArray(root?.videos) ? root.videos : Array.isArray(raw?.videos) ? raw.videos : null;
   if (!videos) throw new Error("TikTok posts provider returned an invalid response");
+  // An empty list is only a valid success when the account really has no videos.
+  // The scraper answers HTTP 200 with videos:[] plus a warning when TikTok blocks it,
+  // so treat that as a failure and let the job retry instead of marking it done.
+  if (videos.length === 0) {
+    const warning = typeof raw?.warning === "string" ? raw.warning : (typeof root?.warning === "string" ? root.warning : "");
+    const expected = nonNegativeInteger(account.oldVideoCount);
+    if (warning || (expected !== null && expected > 0)) {
+      throw new Error(`TikTok posts provider returned no videos${warning ? `: ${warning}` : ` (profile reports ${expected})`}`.slice(0, 300));
+    }
+  }
 
   const query = db(env);
   let inserted = 0;
@@ -297,6 +308,44 @@ export async function refreshProfile(env: Env, account: SocialAccount, q: Return
 
 /** Bounded scheduled work: refresh a small profile slice, enqueue eligible
  * creators, and process no more than one posts pull per invocation. */
+/** Claim and run up to `maxJobs` queued post pulls. First-time pulls (new or empty creators) go first. */
+export async function processQueuedJobs(env: Env, maxJobs = 3): Promise<unknown[]> {
+  const q = db(env);
+  const results: unknown[] = [];
+  for (let n = 0; n < maxJobs; n++) {
+    // Atomic claim: the UPDATE and row lock happen in one database statement.
+    const picked = await q.query<{ id: string; socialAccountId: string }>(`WITH next_job AS (
+        SELECT id FROM hof_sync_jobs
+        WHERE platform='tiktok' AND status='queued'
+        ORDER BY (requested_by IN ('creator-linked','missing-videos')) DESC, created_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+      )
+      UPDATE hof_sync_jobs j SET status='running',attempts=attempts+1,started_at=now(),finished_at=NULL
+      FROM next_job WHERE j.id=next_job.id
+      RETURNING j.id,j.social_account_id AS "socialAccountId"`);
+    if (!picked.length) break;
+
+    const job = picked[0];
+    let failedThisRound = false;
+    let postsResult: unknown = "none";
+    try {
+      const rows = await q.query<SocialAccount>(`SELECT id,username,platform_user_id AS "platformUserId",
+          display_name AS "displayName",video_count AS "oldVideoCount",NULL::timestamptz AS "lastPostSyncAt"
+        FROM hof_social_accounts WHERE id=$1 AND platform='tiktok'`, [job.socialAccountId]);
+      if (!rows.length) throw new Error("Social account no longer exists");
+      postsResult = await pullPosts(env, rows[0]);
+      await q.query("UPDATE hof_sync_jobs SET status='succeeded',finished_at=now(),error_summary=NULL WHERE id=$1", [job.id]);
+    } catch (error) {
+      failedThisRound = true;
+      const summary = error instanceof Error ? error.message : "TikTok collection failed";
+      await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
+        finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
+    }
+    results.push(postsResult);
+    if (failedThisRound) break;
+  }
+  return results;
+}
+
 export async function runScheduledCollection(env: Env) {
   if (env.TIKTOK_SYNC_ENABLED !== "true") return { disabled: true };
   const q = db(env);
@@ -311,7 +360,8 @@ export async function runScheduledCollection(env: Env) {
   const batchSize = Math.min(30, Math.max(1, Number(env.TIKTOK_SYNC_BATCH_SIZE || 10) || 10));
   const accounts = await q.query<SocialAccount>(`SELECT s.id,s.username,s.platform_user_id AS "platformUserId",
       s.display_name AS "displayName",s.video_count AS "oldVideoCount",
-      (SELECT max(finished_at) FROM hof_sync_jobs j WHERE j.social_account_id=s.id AND j.status='succeeded') AS "lastPostSyncAt"
+      (SELECT max(finished_at) FROM hof_sync_jobs j WHERE j.social_account_id=s.id AND j.status='succeeded') AS "lastPostSyncAt",
+      (SELECT count(*) FROM hof_discover_posts d WHERE d.source='tiktok' AND d.creator_social_account_id=s.id) AS "storedPosts"
     FROM hof_social_accounts s JOIN hof_profiles p ON p.id=s.profile_id
     WHERE s.platform='tiktok' AND p.status='active' AND p.visibility='public'
       AND COALESCE(s.is_private,false)=false
@@ -329,12 +379,19 @@ export async function runScheduledCollection(env: Env) {
       const lastPostSync = account.lastPostSyncAt ? new Date(account.lastPostSyncAt).getTime() : 0;
       const reconciliationDue = !lastPostSync || Date.now() - lastPostSync > 24 * 60 * 60 * 1000;
       const countIncreased = oldCount === null || (newCount !== null && newCount > oldCount);
-      if (metadata.isPrivate !== true && (countIncreased || reconciliationDue)) {
+      // Initial/backfill rule: the profile reports videos but we hold none for this creator.
+      const reportedVideos = newCount ?? oldCount;
+      const missingVideos = reportedVideos !== null && reportedVideos > 0 && Number(account.storedPosts ?? 0) === 0;
+      if (metadata.isPrivate !== true && (countIncreased || reconciliationDue || missingVideos)) {
+        const reason = missingVideos ? "missing-videos" : "video-count-increased";
+        // No new job while one is queued/running, and after 3 failed attempts pause 6h so a dead account is not retried every cron.
         const jobs = await q.query<{ id: string }>(`INSERT INTO hof_sync_jobs(platform,social_account_id,status,requested_by)
-          SELECT 'tiktok',$1,'queued','video-count-increased'
+          SELECT 'tiktok',$1,'queued',$2
           WHERE NOT EXISTS(SELECT 1 FROM hof_sync_jobs
             WHERE platform='tiktok' AND social_account_id=$1 AND status IN ('queued','running'))
-          RETURNING id`, [account.id]);
+            AND NOT EXISTS(SELECT 1 FROM hof_sync_jobs
+            WHERE platform='tiktok' AND social_account_id=$1 AND status='failed' AND finished_at > now()-interval '6 hours')
+          RETURNING id`, [account.id, reason]);
         if (jobs.length) queued++;
       }
       checked++;
@@ -343,40 +400,7 @@ export async function runScheduledCollection(env: Env) {
     }
   }
 
-  const postsResults: unknown[] = [];
-  for (let n = 0; n < 3; n++) {
-    // Atomic claim: the UPDATE and row lock happen in one database statement.
-    const picked = await q.query<{ id: string; socialAccountId: string }>(`WITH next_job AS (
-        SELECT id FROM hof_sync_jobs
-        WHERE platform='tiktok' AND status='queued'
-        ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1
-      )
-      UPDATE hof_sync_jobs j SET status='running',attempts=attempts+1,started_at=now(),finished_at=NULL
-      FROM next_job WHERE j.id=next_job.id
-      RETURNING j.id,j.social_account_id AS "socialAccountId"`);
-
-    let postsResult: unknown = "none";
-    let failedThisRound = false;
-    if (picked.length) {
-      const job = picked[0];
-      try {
-        const rows = await q.query<SocialAccount>(`SELECT id,username,platform_user_id AS "platformUserId",
-            display_name AS "displayName",video_count AS "oldVideoCount",NULL::timestamptz AS "lastPostSyncAt"
-          FROM hof_social_accounts WHERE id=$1 AND platform='tiktok'`, [job.socialAccountId]);
-        if (!rows.length) throw new Error("Social account no longer exists");
-        postsResult = await pullPosts(env, rows[0]);
-        await q.query("UPDATE hof_sync_jobs SET status='succeeded',finished_at=now(),error_summary=NULL WHERE id=$1", [job.id]);
-      } catch (error) {
-        failedThisRound = true;
-        const summary = error instanceof Error ? error.message : "TikTok collection failed";
-        await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
-          finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
-      }
-    }
-    if (!picked.length) break;
-    postsResults.push(postsResult);
-    if (failedThisRound) break;
-  }
+  const postsResults = await processQueuedJobs(env, 3);
   const allPosts: unknown = postsResults.length ? postsResults : "none";
   let creators: unknown = null;
   try { creators = await refreshDueCreators(env, 5); } catch { creators = "error"; }
