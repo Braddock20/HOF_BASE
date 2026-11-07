@@ -100,7 +100,7 @@ All admin routes require the header. Missing/invalid keys receive `401`; a missi
 
 ## Background TikTok collection
 
-The Worker cron runs every 5 minutes, but scheduled TikTok synchronization is opt-in and remains disabled by default in every Wrangler environment (`TIKTOK_SYNC_ENABLED=false`). When deliberately enabled after testing, it checks a bounded slice of active, public TikTok creator accounts through the profile endpoint (or the optional batch profile endpoint), compares stored video counts, and periodically reconciles accounts. It processes at most one slow posts endpoint request per invocation. It never downloads TikTok videos, fetches odds, or runs collection in a public API request.
+The Worker cron runs every 5 minutes, but scheduled TikTok synchronization is enabled in every Wrangler environment (`TIKTOK_SYNC_ENABLED=true`; set it to `false` to stop collection). It it checks a bounded slice of active, public TikTok creator accounts through the profile endpoint (or the optional batch profile endpoint), compares stored video counts, and periodically reconciles accounts. It processes at most one slow posts endpoint request per invocation. It never downloads TikTok videos, fetches odds, or runs collection in a public API request.
 
 The configured scraper routes are `TIKTOK_PROFILE_PATH=/api/profile` and `TIKTOK_POSTS_PATH=/api/profile/posts`; the posts endpoint is called with `?handle=username`. `TIKTOK_BATCH_PROFILE_PATH` is optional and must accept `POST {"handles":["..."]}` and return a list in `data`, `profiles`, or `users`. Imported posts are checked against the registered creator handle and, when available, platform user ID. Existing HOF moderation states and established creator attribution are preserved during refresh. Engagement snapshots are recorded only when at least one metric is available. Abandoned jobs are recovered after a bounded lease and retried up to three attempts.
 
@@ -172,7 +172,7 @@ This registry is deliberately separate from `hof_profiles` and `hof_social_accou
 - `PATCH /api/admin/tiktok-creators/:id` (displayName, notes, status: active/paused/blocked)
 - `DELETE /api/admin/tiktok-creators/:id` (soft deactivation; it does not erase history)
 
-All routes require `X-API-Key`. Permissions are `creator.manage` and `creator.sync`. The independent registry currently supports account registration and profile metadata refresh. Its records are **not yet wired into the legacy scheduled post-import queue**, which still selects TikTok accounts linked to active HOF profiles. Do not turn on `TIKTOK_SYNC_ENABLED` expecting the independent registry to import videos; that adapter is a remaining backend task.
+All routes require `X-API-Key`. Permissions are `creator.manage` and `creator.sync`. The independent registry currently supports account registration and profile metadata refresh. Once a creator syncs successfully it is linked to a public HOF profile and queued for an immediate first video pull; later pulls happen when the video count grows, when a creator has no stored videos, or on the 24h reconciliation.
 
 ## Awards APIs
 
