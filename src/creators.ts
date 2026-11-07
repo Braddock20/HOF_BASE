@@ -5,6 +5,7 @@ import { db } from "./db";
 import { fail, ok, slugify } from "./http";
 import { requireAdmin, requirePermission } from "./auth";
 import { refreshCreator, linkUnlinkedCreators } from "./creator-sync";
+import { processQueuedJobs } from "./collector";
 
 type E = { Bindings: Env; Variables: AppVariables };
 export const creatorAdmin = new Hono<E>();
@@ -32,6 +33,10 @@ creatorAdmin.post("/", requirePermission("creator.manage"), async c => {
     let synced = false;
     try { created = { ...created, ...(await refreshCreator(c.env, String(rows[0].id), String(p.data.username))) }; synced = true; }
     catch { /* creator stays registered; the cron retries automatically */ }
+    // Start the first video pull right away instead of waiting for the next cron tick.
+    if (synced && c.env.TIKTOK_SYNC_ENABLED === "true") {
+      try { c.executionCtx.waitUntil(processQueuedJobs(c.env, 1).catch(() => [])); } catch { /* no execution context; cron will pick it up */ }
+    }
     return ok(c, created, 201, { synced });
   } catch { return fail(c, 409, "CONFLICT", "That TikTok username is already registered or could not be added."); }
 });
