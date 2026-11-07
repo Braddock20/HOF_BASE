@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.15 — Say why videos are skipped
+- `pullPosts` counts why each video was skipped (no_id, bad_url, status_<x>, ad, other_author, deleted, owned_by_other_creator, conflict).
+- If videos are received but none are stored, the job now fails with those reasons in `error_summary` instead of being recorded as succeeded (which also re-queued the account on every cron run).
+
+## 1.2.14 — Failing accounts no longer block the queue
+- Fresh jobs are claimed before retried ones (`attempts ASC`), so a creator whose videos cannot be read goes to the back after each failure.
+- A failed pull no longer ends the collection run; it stops early only on rate-limit style errors.
+
+## 1.2.13 — Leaderboard `_change` metrics
+- Added `followers_change`, `likes_change`, `videos_change`: all accounts with history, signed change over the window, for a gains-and-losses ticker view.
+
 ## 1.2.11 — Always-on collector and initial video pulls
 - `TIKTOK_SYNC_ENABLED` is now `"true"` in every Wrangler environment (the flag remains as a kill switch).
 - Newly added/linked creators are pulled first: queued jobs from `creator-linked` / `missing-videos` are claimed before routine refreshes, and adding a creator starts one pull immediately.
