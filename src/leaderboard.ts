@@ -14,11 +14,11 @@ const BASES = {
   videos: { col: "video_count", snap: "videos" }
 } as const;
 type Base = keyof typeof BASES;
-type Kind = "total" | "gain" | "loss" | "growth";
+type Kind = "total" | "gain" | "loss" | "growth" | "change";
 
 const WINDOWS: Record<string, string> = { "24h": "24 hours", "7d": "7 days", "30d": "30 days" };
 const PLATFORMS = ["tiktok", "instagram", "youtube"];
-const KINDS: Kind[] = ["gain", "loss", "growth"];
+const KINDS: Kind[] = ["gain", "loss", "growth", "change"];
 
 export function parseMetric(value: string): { base: Base; kind: Kind } | null {
   const [name, suffix] = value.split("_");
@@ -44,6 +44,7 @@ leaderboard.get("/metrics", c => ok(c, {
     total: "followers, likes, videos: current value, highest first.",
     gain: "<metric>_gain: biggest increase over the window.",
     loss: "<metric>_loss: biggest drop over the window (largest loss first).",
+    change: "<metric>_change: every account with history, signed change over the window (gains first, then flat, then losses); this is the stock-ticker view.",
     growth: "<metric>_growth: percentage increase over the window; accounts below minBase are excluded to avoid tiny-account noise.",
     params: "metric, window (24h|7d|30d), platform, limit (1-100), offset, minBase (growth only, default 100), strict=true (exclude accounts whose history is shorter than the window)."
   }
@@ -112,9 +113,10 @@ leaderboard.get("/", async c => {
       )`;
       const where = parsed.kind === "gain" ? "change > 0"
         : parsed.kind === "loss" ? "change < 0"
+        : parsed.kind === "change" ? "change IS NOT NULL"
         : `growth_pct IS NOT NULL AND change > 0 AND prev_val >= ${P(minBase)}::bigint`;
-      const valueExpr = parsed.kind === "gain" ? "change" : parsed.kind === "loss" ? "(-change)" : "growth_pct";
-      const orderExpr = parsed.kind === "loss" ? "change ASC" : parsed.kind === "gain" ? "change DESC" : "growth_pct DESC";
+      const valueExpr = parsed.kind === "gain" || parsed.kind === "change" ? "change" : parsed.kind === "loss" ? "(-change)" : "growth_pct";
+      const orderExpr = parsed.kind === "loss" ? "change ASC" : parsed.kind === "gain" || parsed.kind === "change" ? "change DESC" : "growth_pct DESC";
       const extra = `prev_val AS "previous", change, growth_pct AS "growthPct", partial AS "partialWindow", prev_at AS "baselineAt",`;
       sql = `WITH ${accounts}${growthCte},
         ranked AS (SELECT calc.*, ${valueExpr} AS value, RANK() OVER (ORDER BY ${orderExpr}) AS rank_no, count(*) OVER() AS total_rows
