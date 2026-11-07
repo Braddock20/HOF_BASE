@@ -32,7 +32,7 @@ api.get("/health/tiktok", c => ok(c, {
   probe: "deferred-until-profile-refresh",
   note: "The scraper does not expose a dedicated /api/health route; use a creator refresh to verify live connectivity."
 }));
-api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.2", build: "tiktok-refresh-resilience-cors-hardening" }));
+api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.8", build: "auto-sync-open-cors" }));
 api.route("/discover", discoverRoutes);
 api.route("/media", mediaRoutes);
 api.route("/admin/discover", discoverAdmin);
@@ -147,7 +147,7 @@ admin.get("/me", c => ok(c, { authentication: "api-key", administrator: "super-a
 admin.get("/profiles", requirePermission("profile.view"), async c => {
   const { limit, offset } = pagination(c);
   try {
-    const rows = await db(c.env).query("SELECT id,display_name AS \"displayName\",slug,status,visibility,created_at AS \"createdAt\" FROM hof_profiles ORDER BY created_at DESC LIMIT $1 OFFSET $2",[limit,offset]);
+    const rows = await db(c.env).query("SELECT p.id,p.display_name AS \"displayName\",p.slug,p.status,p.visibility,p.bio,sa.username AS \"tiktokUsername\",sa.avatar_url_temporary AS \"avatarUrl\",sa.followers,sa.following,sa.video_count AS \"videoCount\",sa.total_likes AS \"totalLikes\",sa.provider_status AS \"providerStatus\",sa.last_synced_at AS \"lastSyncedAt\",p.created_at AS \"createdAt\" FROM hof_profiles p LEFT JOIN LATERAL (SELECT * FROM hof_social_accounts s WHERE s.profile_id=p.id AND s.platform='tiktok' ORDER BY s.created_at LIMIT 1) sa ON true ORDER BY p.created_at DESC LIMIT $1 OFFSET $2",[limit,offset]);
     return ok(c,rows,200,{limit,offset});
   } catch { return fail(c,503,"DATABASE_UNAVAILABLE","Admin profiles unavailable."); }
 });
