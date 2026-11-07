@@ -1,15 +1,9 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.env
-
-# collected data (regenerate with the scraper)
-tiktok_data/
-data/
-*.sqlite3-journal
-
-# Cloudflare Worker
 node_modules/
 .wrangler/
 .dev.vars
+.env
+.env.*
+!.dev.vars.example
+dist/
+coverage/
+.DS_Store
