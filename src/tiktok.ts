@@ -112,7 +112,7 @@ export async function discoverTikTok(env: Env, username: string): Promise<Discov
   url.searchParams.set("handle", username.replace(/^@/, ""));
   const headers = new Headers({ Accept: "application/json" });
   if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000), redirect: "error" });
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000), redirect: "manual" });
   if (response.status === 404) throw new Error("TikTok account was not found");
   if (response.status === 429) throw new Error("TikTok provider is rate limited");
   if (!response.ok) throw new Error(`TikTok provider returned ${response.status}`);
