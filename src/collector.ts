@@ -1,6 +1,6 @@
 import type { Env } from "./types";
 import { db } from "./db";
-import { discoverTikTok, normalizeTikTok } from "./tiktok";
+import { discoverTikTok, normalizeTikTok, scraperFetch } from "./tiktok";
 import { b2Configured, uploadPrivateB2Object } from "./b2";
 
 type SocialAccount = {
@@ -126,7 +126,7 @@ async function pullPosts(env: Env, account: SocialAccount) {
   const url = new URL(env.TIKTOK_POSTS_PATH, `${base.toString().replace(/\/+$/, "")}/`);
   url.searchParams.set("handle", account.username.replace(/^@/, ""));
   const headers = new Headers({ Accept: "application/json" });
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(25_000), redirect: "manual" });
+  const response = await scraperFetch(env, url, { headers, signal: AbortSignal.timeout(25_000), redirect: "manual" });
   if (response.status === 429) throw new Error("TikTok posts provider is rate limited");
   if (!response.ok) throw new Error(`TikTok posts provider returned ${response.status}`);
   const raw = await response.json() as any;
@@ -238,7 +238,7 @@ async function batchProfiles(env: Env, accounts: SocialAccount[]): Promise<Map<s
     if (base.protocol !== "https:") return result;
     const url = new URL(env.TIKTOK_BATCH_PROFILE_PATH, `${base.toString().replace(/\/+$/, "")}/`);
     const headers = new Headers({ Accept: "application/json", "Content-Type": "application/json" });
-      const response = await fetch(url, {
+      const response = await scraperFetch(env, url, {
       method: "POST", headers, body: JSON.stringify({ handles: accounts.map(account => account.username) }),
       signal: AbortSignal.timeout(20_000), redirect: "manual"
     });
