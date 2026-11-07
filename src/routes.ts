@@ -8,6 +8,7 @@ import { discover as discoverRoutes, discoverAdmin, media as mediaRoutes } from 
 import { creatorAdmin, awardsPublic, awardsAdmin } from "./creators";
 
 type E = { Bindings: Env; Variables: AppVariables };
+const AV = `(SELECT s2.avatar_url_temporary FROM hof_social_accounts s2 WHERE s2.profile_id=p.id AND s2.avatar_url_temporary IS NOT NULL ORDER BY (s2.platform='tiktok') DESC LIMIT 1) AS "avatarUrl",(SELECT max(s3.followers) FROM hof_social_accounts s3 WHERE s3.profile_id=p.id) AS followers`;
 export const api = new Hono<E>();
 
 const pagination = (c: any) => ({
@@ -32,7 +33,7 @@ api.get("/health/tiktok", c => ok(c, {
   probe: "deferred-until-profile-refresh",
   note: "The scraper does not expose a dedicated /api/health route; use a creator refresh to verify live connectivity."
 }));
-api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.8", build: "auto-sync-open-cors" }));
+api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.9", build: "public-avatars-linked-creators" }));
 api.route("/discover", discoverRoutes);
 api.route("/media", mediaRoutes);
 api.route("/admin/discover", discoverAdmin);
@@ -42,7 +43,7 @@ api.get("/profiles", async c => {
   const { limit, offset } = pagination(c);
   try {
     const rows = await db(c.env).query(
-      `SELECT p.id, p.display_name AS "displayName", p.slug, p.bio, p.created_at AS "createdAt",
+      `SELECT p.id, p.display_name AS "displayName", p.slug, p.bio, ${AV}, p.created_at AS "createdAt",
        (SELECT json_agg(json_build_object('platform',s.platform,'username',s.username,'profileUrl',s.profile_url,
           'followers',s.followers,'lastSyncedAt',s.last_synced_at)) FROM hof_social_accounts s WHERE s.profile_id=p.id) AS "socialAccounts"
        FROM hof_profiles p WHERE p.status='active' AND p.visibility='public'
@@ -54,7 +55,7 @@ api.get("/profiles", async c => {
 api.get("/profiles/:slug", async c => {
   try {
     const rows = await db(c.env).query(
-      `SELECT p.id,p.display_name AS "displayName",p.slug,p.bio,p.created_at AS "createdAt",p.updated_at AS "updatedAt",
+      `SELECT p.id,p.display_name AS "displayName",p.slug,p.bio,${AV},p.created_at AS "createdAt",p.updated_at AS "updatedAt",
        json_build_object('identity', COALESCE((SELECT status FROM hof_verifications v WHERE v.profile_id=p.id AND verification_type='identity'),'pending'),
                          'campus', COALESCE((SELECT status FROM hof_verifications v WHERE v.profile_id=p.id AND verification_type='campus'),'pending')) AS verifications,
        COALESCE((SELECT json_agg(json_build_object('id',r.id,'name',r.name,'slug',r.slug,'description',r.description,'badgeColor',r.badge_color,'textColor',r.text_color,'icon',r.icon))
@@ -73,7 +74,7 @@ api.get("/search", async c => {
   if (!q) return ok(c, []);
   try {
     const rows = await db(c.env).query(
-      `SELECT DISTINCT p.id,p.display_name AS "displayName",p.slug,p.bio
+      `SELECT DISTINCT p.id,p.display_name AS "displayName",p.slug,p.bio,${AV}
        FROM hof_profiles p LEFT JOIN hof_social_accounts s ON s.profile_id=p.id
        LEFT JOIN hof_profile_categories pc ON pc.profile_id=p.id LEFT JOIN hof_categories cat ON cat.id=pc.category_id
        WHERE p.status='active' AND p.visibility='public'
@@ -90,7 +91,7 @@ api.get("/categories", async c => {
 api.get("/categories/:slug", async c => {
   try {
     const rows = await db(c.env).query(
-      `SELECT p.id,p.display_name AS "displayName",p.slug,p.bio FROM hof_profiles p
+      `SELECT p.id,p.display_name AS "displayName",p.slug,p.bio,${AV} FROM hof_profiles p
        JOIN hof_profile_categories pc ON pc.profile_id=p.id JOIN hof_categories cat ON cat.id=pc.category_id
        WHERE cat.slug=$1 AND cat.is_active AND p.status='active' AND p.visibility='public'
        ORDER BY p.display_name`, [c.req.param("slug")]);
@@ -104,7 +105,7 @@ api.get("/sections", async c => {
 api.get("/sections/:slug", async c => {
   try {
     const rows = await db(c.env).query(
-      `SELECT p.id,p.display_name AS "displayName",p.slug,p.bio,si.position
+      `SELECT p.id,p.display_name AS "displayName",p.slug,p.bio,${AV},si.position
        FROM hof_section_items si JOIN hof_display_sections ds ON ds.id=si.section_id
        JOIN hof_profiles p ON p.id=si.profile_id
        WHERE ds.slug=$1 AND ds.is_active AND p.status='active' AND p.visibility='public'
@@ -125,7 +126,7 @@ api.get("/rankings", async c => {
 api.get("/rankings/:slug", async c => {
   try {
     const rows = await db(c.env).query(
-      `SELECT p.display_name AS "displayName",p.slug,r.name AS rank,r.badge_color AS "badgeColor",pr.assigned_at AS "assignedAt"
+      `SELECT p.display_name AS "displayName",p.slug,${AV},r.name AS rank,r.badge_color AS "badgeColor",pr.assigned_at AS "assignedAt"
        FROM hof_profile_ranks pr JOIN hof_ranks r ON r.id=pr.rank_id JOIN hof_profiles p ON p.id=pr.profile_id
        WHERE r.slug=$1 AND r.is_active AND pr.status='active' AND (pr.expires_at IS NULL OR pr.expires_at>now())
        AND p.status='active' AND p.visibility='public' ORDER BY pr.assigned_at DESC`, [c.req.param("slug")]);
