@@ -4,7 +4,7 @@ import type { Env, AppVariables } from "./types";
 import { db } from "./db";
 import { fail, ok, slugify } from "./http";
 import { requireAdmin, requirePermission } from "./auth";
-import { refreshCreator } from "./creator-sync";
+import { refreshCreator, linkUnlinkedCreators } from "./creator-sync";
 
 type E = { Bindings: Env; Variables: AppVariables };
 export const creatorAdmin = new Hono<E>();
@@ -44,6 +44,10 @@ creatorAdmin.get("/:id", requirePermission("creator.manage"), async c => {
   } catch { return fail(c, 503, "DATABASE_UNAVAILABLE", "TikTok creator could not be loaded."); }
 });
 
+creatorAdmin.post("/link-all", requirePermission("creator.manage"), async c => {
+  try { return ok(c, await linkUnlinkedCreators(c.env)); }
+  catch { return fail(c, 503, "DATABASE_UNAVAILABLE", "Creators could not be linked."); }
+});
 creatorAdmin.post("/:id/refresh", requirePermission("creator.sync"), async c => {
   try {
     const existing = await db(c.env).query<{ username: string }>("SELECT username FROM hof_tiktok_creators WHERE id=$1 AND status='active'", [c.req.param("id")]);
