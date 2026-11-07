@@ -13,6 +13,10 @@ TIKTOK_POSTS_PATH = "/api/profile/posts"
 TIKTOK_SYNC_BATCH_SIZE = "10"
 TIKTOK_SYNC_ENABLED = "false"
 
+[[services]]
+binding = "TIKTOK_SCRAPER"
+service = "hof"
+
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -28,3 +32,11 @@ vars = { APP_ENV = "production", LOG_LEVEL = "warn", RATE_LIMIT_ENABLED = "true"
 crons = ["*/5 * * * *"]
 [env.production.triggers]
 crons = ["*/5 * * * *"]
+
+[[env.staging.services]]
+binding = "TIKTOK_SCRAPER"
+service = "hof"
+
+[[env.production.services]]
+binding = "TIKTOK_SCRAPER"
+service = "hof"
