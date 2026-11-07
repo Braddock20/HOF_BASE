@@ -241,6 +241,13 @@ const SECTIONS = {
         if (v) { await run(() => api("POST", "/api/admin/tiktok-creators", v), "Creator added"); load(); } } }, "+ Add creator"),
       h("select", { style: "width:auto", onchange: e => { st.status = e.target.value; st.offset = 0; load(); } },
         ["", "active", "paused", "blocked"].map(s => h("option", { value: s }, s || "all statuses"))),
+      h("button", { onclick: async () => {
+        const r = await run(() => api("GET", "/api/admin/tiktok-creators?limit=100&status=active")); if (!r) return;
+        const due = r.data.filter(c => !c.lastSyncedAt || c.providerStatus !== "ok");
+        if (!due.length) return toast("Everything is already synced", "good");
+        let okN = 0, bad = 0;
+        for (const c of due) { try { await api("POST", `/api/admin/tiktok-creators/${c.id}/refresh`); okN++; } catch { bad++; } toast(`Refreshing… ${okN + bad}/${due.length}`); }
+        toast(`Refreshed ${okN}, failed ${bad}`, bad ? "bad" : "good"); load(); } }, "Refresh unsynced"),
       pager(st, load), h("button", { onclick: load }, "Reload")), body);
     load();
   },
@@ -250,7 +257,7 @@ const SECTIONS = {
     await loadRefs();
     const load = async () => {
       const r = await run(() => api("GET", `/api/admin/profiles?limit=${st.limit}&offset=${st.offset}`)); if (!r) return;
-      body.replaceChildren(table(r.data, ["displayName", "slug", "status", "visibility", "createdAt"], row => [
+      body.replaceChildren(table(r.data, ["displayName", "slug", "status", "visibility", "followers", "videoCount", "providerStatus", "lastSyncedAt", "bio", "createdAt"], row => [
         { label: "Edit", fn: async () => {
           const v = await form("Edit " + row.displayName, [
             { name: "displayName", label: "Display name", value: row.displayName },
