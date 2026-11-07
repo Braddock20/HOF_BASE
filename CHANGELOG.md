@@ -34,3 +34,12 @@
 - Added tombstones so permanently deleted TikTok posts are not re-imported.
 - Added restricted configurable CORS and new Discover/media permissions.
 - Added migration `0002_discover.sql`.
+
+## 1.2.0 — independent creator registry and awards APIs
+
+- Added an independent TikTok creator registry that does not require a HOF profile or HOF login.
+- Added admin list/add/view/edit/deactivate and on-demand profile metadata refresh endpoints.
+- Added metric history storage for independent TikTok creator profile snapshots.
+- Added public award listing/detail endpoints and admin award lifecycle, nomination review and winner publishing endpoints.
+- Added migration `0003_creator_manager_awards.sql` and registered it in the migration runner.
+- Added `.env.example` and documented Wrangler scraper configuration. TikTok scheduled sync remains disabled by default.
