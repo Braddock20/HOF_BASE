@@ -5,6 +5,7 @@ import { db } from "./db";
 import { fail, ok, requiredString, slugify } from "./http";
 import { requireAdmin, requirePermission } from "./auth";
 import { discover as discoverRoutes, discoverAdmin, media as mediaRoutes } from "./discover";
+import { creatorAdmin, awardsPublic, awardsAdmin } from "./creators";
 
 type E = { Bindings: Env; Variables: AppVariables };
 export const api = new Hono<E>();
@@ -26,27 +27,15 @@ api.get("/health/db", async c => {
 api.get("/health/tiktok", async c => {
   if (!c.env.TIKTOK_SCRAPER_BASE_URL) return ok(c, { configured: false, healthy: false });
   try {
-    const base = c.env.TIKTOK_SCRAPER_BASE_URL.replace(/\/+$/, "");
-const profilePath = c.env.TIKTOK_PROFILE_PATH || "/api/profile";
-
-const url = new URL(base + profilePath);
-url.searchParams.set("handle", "silvanus_mn");
-
-const r = await fetch(url.toString(), {
-  signal: AbortSignal.timeout(15000)
-});
-
-return ok(c, {
-  configured: true,
-  healthy: r.ok,
-  status: r.status
-});
+    const r = await fetch(`${c.env.TIKTOK_SCRAPER_BASE_URL.replace(/\/+$/, "")}/api/health`, { signal: AbortSignal.timeout(8000) });
+    return ok(c, { configured: true, healthy: r.ok, status: r.status });
   } catch { return ok(c, { configured: true, healthy: false }); }
 });
-api.get("/version", c => ok(c, { name: "hof-api", version: "1.1.0", build: "discover-feed-private-b2" }));
+api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.0", build: "independent-tiktok-creators-awards-discover-private-b2" }));
 api.route("/discover", discoverRoutes);
 api.route("/media", mediaRoutes);
 api.route("/admin/discover", discoverAdmin);
+api.route("/awards", awardsPublic);
 
 api.get("/profiles", async c => {
   const { limit, offset } = pagination(c);
@@ -348,4 +337,6 @@ admin.get("/audit-logs",requirePermission("audit.view"),async c=>{
   catch{return fail(c,503,"DATABASE_UNAVAILABLE","Audit logs unavailable.");}
 });
 
+admin.route("/tiktok-creators", creatorAdmin);
+admin.route("/awards", awardsAdmin);
 api.route("/admin",admin);
