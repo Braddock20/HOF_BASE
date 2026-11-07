@@ -26,9 +26,10 @@ export async function refreshDueCreators(env: Env, limit = 5) {
     WHERE status='active' AND (last_synced_at IS NULL OR last_synced_at < now()-interval '6 hours')
       AND COALESCE(provider_status,'') <> 'not_found'
     ORDER BY last_synced_at NULLS FIRST LIMIT $1`, [limit]);
+  const linked = await linkUnlinkedCreators(env).catch(() => null);
   let ok = 0, failed = 0;
   for (const c of due) { try { await refreshCreator(env, c.id, c.username); ok++; } catch { failed++; } }
-  return { due: due.length, ok, failed };
+  return { due: due.length, ok, failed, linked };
 }
 
 /** Make an admin-added TikTok creator appear in the public Hall of Fame and the post collector:
@@ -45,12 +46,25 @@ export async function linkCreatorToProfile(env: Env, creatorId: string) {
   const slug = slugify(name) || slugify(c.username) || "creator";
   const profiles = await q.query<{ id: string }>(`INSERT INTO hof_profiles(display_name,slug,bio,status,visibility)
     VALUES($1,$2,$3,'active','public') RETURNING id`, [name, `${slug}-${String(c.id).slice(0, 6)}`, c.bio || null]);
-  await q.query(`INSERT INTO hof_social_accounts(profile_id,platform,username,profile_url,display_name,bio,avatar_url_temporary,
+  const accounts = await q.query<{ id: string }>(`INSERT INTO hof_social_accounts(profile_id,platform,username,profile_url,display_name,bio,avatar_url_temporary,
       platform_user_id,is_private,platform_verified,followers,following,video_count,total_likes,last_synced_at,provider_status)
-    VALUES($1,'tiktok',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),$14)`,
+    VALUES($1,'tiktok',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),$14) RETURNING id`,
     [profiles[0].id, c.username, c.profile_url, name, c.bio, c.avatar_url, c.platform_user_id, c.is_private, c.platform_verified,
      c.followers, c.following, c.video_count, c.total_likes, c.provider_status]);
+  // Pull this creator's videos on the next cron run instead of waiting for a video-count change.
+  await q.query(`INSERT INTO hof_sync_jobs(platform,social_account_id,status,requested_by) VALUES('tiktok',$1,'queued','creator-linked')`, [accounts[0].id]).catch(() => []);
   await q.query(`INSERT INTO hof_audit_logs(actor_subject,action,target_type,target_id,after_state) VALUES('system','tiktok.creator.publish','tiktok_creator',$1,$2::jsonb)`,
     [creatorId, JSON.stringify({ profileId: profiles[0].id })]).catch(() => []);
   return true;
+}
+
+/** Link every active, successfully synced creator that has no public profile yet. */
+export async function linkUnlinkedCreators(env: Env) {
+  const rows = await db(env).query<{ id: string }>(`SELECT c.id FROM hof_tiktok_creators c
+    WHERE c.status='active' AND c.provider_status IN ('ok','partial')
+      AND NOT EXISTS(SELECT 1 FROM hof_social_accounts s WHERE s.platform='tiktok' AND lower(s.username)=lower(c.username))
+    LIMIT 20`);
+  let linked = 0;
+  for (const r of rows) { try { if (await linkCreatorToProfile(env, r.id)) linked++; } catch { /* retry next run */ } }
+  return { candidates: rows.length, linked };
 }
