@@ -4,6 +4,7 @@ import type { Env, AppVariables } from "./types";
 import { db } from "./db";
 import { fail, ok, slugify } from "./http";
 import { requireAdmin, requirePermission } from "./auth";
+import { refreshProfile } from "./collector";
 import { b2Configured, deletePrivateB2Object, fetchPrivateB2Object, uploadPrivateB2Object } from "./b2";
 
 type E = { Bindings: Env; Variables: AppVariables };
@@ -381,15 +382,20 @@ admin.patch("/creator-requests/:id",requirePermission("creator.requests.review")
     const profiles=await db(c.env).query<any>(`INSERT INTO hof_profiles(display_name,slug,status,visibility)
       VALUES($1,$2,'active','public') RETURNING id,slug`,[name,slug]);
     const profile=profiles[0];
-    await db(c.env).query(`INSERT INTO hof_social_accounts(profile_id,platform,username,profile_url,display_name,provider_status)
-      VALUES($1,$2,$3,$4,$5,'partial')`,[profile.id,r.platform,r.username,r.profile_url,name]);
+    const accounts=await db(c.env).query<any>(`INSERT INTO hof_social_accounts(profile_id,platform,username,profile_url,display_name,provider_status)
+      VALUES($1,$2,$3,$4,$5,'partial') RETURNING id`,[profile.id,r.platform,r.username,r.profile_url,name]);
     const assigned=await db(c.env).query("INSERT INTO hof_profile_categories(profile_id,category_id) SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM hof_categories WHERE id=$2 AND is_active) RETURNING category_id",[profile.id,p.data.categoryId]);
     if(!assigned.length)throw new Error("Selected category is unavailable");
     await db(c.env).query("UPDATE hof_creator_requests SET status='approved',review_note=$2,reviewed_at=now() WHERE id=$1",[r.id,p.data.reviewNote]);
     await db(c.env).query(`INSERT INTO hof_audit_logs(actor_subject,action,target_type,target_id,reason,request_id,after_state)
       VALUES('admin-api-key','creator_request.approve','creator_request',$1,$2,$3,json_build_object('profileId',$4,'categoryId',$5))`,
       [r.id,p.data.reviewNote,c.get("requestId"),profile.id,p.data.categoryId]);
-    return ok(c,{requestId:r.id,profileId:profile.id,slug:profile.slug,status:"approved"},201);
+    let synced=false;
+    if(r.platform==="tiktok"&&accounts[0]){
+      try{await refreshProfile(c.env,{id:accounts[0].id,username:r.username,platformUserId:null,displayName:name,oldVideoCount:null,lastPostSyncAt:null} as any,db(c.env));synced=true;}
+      catch{/* the 5-minute cron retries accounts that have not synced */}
+    }
+    return ok(c,{requestId:r.id,profileId:profile.id,slug:profile.slug,status:"approved",synced},201);
   }catch{return fail(c,409,"CONFLICT","Creator approval failed; check category and duplicate profile/account.");}
 });
 admin.post("/posts/:id/review",requirePermission("discover.moderate"),async c=>{
