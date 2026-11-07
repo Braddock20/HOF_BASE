@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.11 — Always-on collector and initial video pulls
+- `TIKTOK_SYNC_ENABLED` is now `"true"` in every Wrangler environment (the flag remains as a kill switch).
+- Newly added/linked creators are pulled first: queued jobs from `creator-linked` / `missing-videos` are claimed before routine refreshes, and adding a creator starts one pull immediately.
+- New backfill rule: if the profile reports videos but none are stored for the creator, a `missing-videos` job is queued regardless of the 24h reconciliation timer.
+- An empty posts response now fails the job (and retries) when the scraper sent a warning or the profile reports videos, instead of being recorded as succeeded.
+- After 3 failed attempts an account is not re-queued for 6 hours.
+- Extracted `processQueuedJobs` from the scheduled collector. No database migration required.
+
 ## 1.2.2 — TikTok integration and resilience hardening
 - Removed unintended Bearer-token forwarding to the confirmed public TikTok scraper endpoints, preventing stale HOF secrets from causing upstream authorization/routing failures.
 - Distinguished a missing scraper route (HTTP 404) from a scraper-reported missing TikTok account.
