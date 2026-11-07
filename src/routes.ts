@@ -6,6 +6,7 @@ import { fail, ok, requiredString, slugify } from "./http";
 import { requireAdmin, requirePermission } from "./auth";
 import { discover as discoverRoutes, discoverAdmin, media as mediaRoutes } from "./discover";
 import { creatorAdmin, awardsPublic, awardsAdmin } from "./creators";
+import { leaderboard } from "./leaderboard";
 
 type E = { Bindings: Env; Variables: AppVariables };
 const AV = `(SELECT s2.avatar_url_temporary FROM hof_social_accounts s2 WHERE s2.profile_id=p.id AND s2.avatar_url_temporary IS NOT NULL ORDER BY (s2.platform='tiktok') DESC LIMIT 1) AS "avatarUrl",(SELECT max(s3.followers) FROM hof_social_accounts s3 WHERE s3.profile_id=p.id) AS followers`;
@@ -38,6 +39,7 @@ api.route("/discover", discoverRoutes);
 api.route("/media", mediaRoutes);
 api.route("/admin/discover", discoverAdmin);
 api.route("/awards", awardsPublic);
+api.route("/leaderboard", leaderboard);
 
 api.get("/profiles", async c => {
   const { limit, offset } = pagination(c);
