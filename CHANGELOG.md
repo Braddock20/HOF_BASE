@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.2 — TikTok integration and resilience hardening
+- Removed unintended Bearer-token forwarding to the confirmed public TikTok scraper endpoints, preventing stale HOF secrets from causing upstream authorization/routing failures.
+- Distinguished a missing scraper route (HTTP 404) from a scraper-reported missing TikTok account.
+- Added URL/path validation, JSON/content-type validation, explicit profile-handle validation, safe transient retry, and clearer provider errors.
+- Added coverage for the exact live scraper response shape, including string-valued `False` flags.
+- Allowed `X-API-Key` in configured frontend CORS preflights.
+- Bounded the per-isolate rate-limit map and corrected TikTok health reporting so it no longer probes a nonexistent `/api/health` endpoint.
+- Kept scheduled TikTok sync disabled by default. No database migration is required.
+
+# Changelog
+
 ## 1.1.3 — TikTok creator sync hardening
 
 - Hardened profile normalization, status handling, HTTPS URL validation and identity consistency checks.
