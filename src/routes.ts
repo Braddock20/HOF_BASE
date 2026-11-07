@@ -33,7 +33,7 @@ api.get("/health/tiktok", c => ok(c, {
   probe: "deferred-until-profile-refresh",
   note: "The scraper does not expose a dedicated /api/health route; use a creator refresh to verify live connectivity."
 }));
-api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.9", build: "public-avatars-linked-creators" }));
+api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.10", build: "auto-link-multi-pull" }));
 api.route("/discover", discoverRoutes);
 api.route("/media", mediaRoutes);
 api.route("/admin/discover", discoverAdmin);
