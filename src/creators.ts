@@ -4,7 +4,7 @@ import type { Env, AppVariables } from "./types";
 import { db } from "./db";
 import { fail, ok, slugify } from "./http";
 import { requireAdmin, requirePermission } from "./auth";
-import { discoverTikTok } from "./tiktok";
+import { refreshCreator } from "./creator-sync";
 
 type E = { Bindings: Env; Variables: AppVariables };
 export const creatorAdmin = new Hono<E>();
@@ -28,7 +28,11 @@ creatorAdmin.post("/", requirePermission("creator.manage"), async c => {
   try {
     const rows = await db(c.env).query(`INSERT INTO hof_tiktok_creators(username,display_name,notes,created_by) VALUES($1,$2,$3,$4) RETURNING id,username,display_name AS "displayName",status,created_at AS "createdAt"`, [p.data.username, p.data.displayName || null, p.data.notes || null, c.get("subject") || "admin-api-key"]);
     await db(c.env).query(`INSERT INTO hof_audit_logs(actor_subject,action,target_type,target_id,request_id,after_state) VALUES($1,'tiktok.creator.add','tiktok_creator',$2,$3,$4::jsonb)`, [c.get("subject") || "admin-api-key", rows[0].id, c.get("requestId"), JSON.stringify({ username: p.data.username })]);
-    return ok(c, rows[0], 201);
+    let created: Record<string, unknown> = rows[0];
+    let synced = false;
+    try { created = { ...created, ...(await refreshCreator(c.env, String(rows[0].id), String(p.data.username))) }; synced = true; }
+    catch { /* creator stays registered; the cron retries automatically */ }
+    return ok(c, created, 201, { synced });
   } catch { return fail(c, 409, "CONFLICT", "That TikTok username is already registered or could not be added."); }
 });
 
@@ -44,19 +48,13 @@ creatorAdmin.post("/:id/refresh", requirePermission("creator.sync"), async c => 
   try {
     const existing = await db(c.env).query<{ username: string }>("SELECT username FROM hof_tiktok_creators WHERE id=$1 AND status='active'", [c.req.param("id")]);
     if (!existing.length) return fail(c, 404, "NOT_FOUND", "Active TikTok creator not found.");
-    const profile = await discoverTikTok(c.env, existing[0].username);
-    if (profile.username.toLowerCase() !== existing[0].username.toLowerCase()) return fail(c, 502, "IDENTITY_MISMATCH", "The scraper returned a different username; creator data was not changed.");
-    const rows = await db(c.env).query(`UPDATE hof_tiktok_creators SET platform_user_id=COALESCE($2,platform_user_id),sec_uid=COALESCE($3,sec_uid),display_name=COALESCE($4,display_name),bio=COALESCE($5,bio),profile_url=$6,avatar_url=COALESCE($7,avatar_url),is_private=COALESCE($8,is_private),platform_verified=COALESCE($9,platform_verified),followers=COALESCE($10,followers),following=COALESCE($11,following),video_count=COALESCE($12,video_count),total_likes=COALESCE($13,total_likes),provider_status=$14,provider_message=$15,last_synced_at=now(),updated_at=now() WHERE id=$1 RETURNING id,username,display_name AS "displayName",profile_url AS "profileUrl",platform_user_id AS "platformUserId",avatar_url AS "avatarUrl",followers,following,video_count AS "videoCount",total_likes AS "totalLikes",provider_status AS "providerStatus",last_synced_at AS "lastSyncedAt"`, [c.req.param("id"),profile.platformUserId,profile.platformSecondaryId,profile.displayName,profile.bio,profile.profileUrl,profile.avatarUrl,profile.isPrivate,profile.platformVerified,profile.metrics.followers,profile.metrics.following,profile.metrics.videos,profile.metrics.likes,profile.providerStatus,profile.providerMessage]);
-    await db(c.env).query(`INSERT INTO hof_tiktok_creator_metric_snapshots(creator_id,followers,following,videos,likes,availability) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [c.req.param("id"),profile.metrics.followers,profile.metrics.following,profile.metrics.videos,profile.metrics.likes,JSON.stringify(profile.metricsAvailability)]);
-    return ok(c, rows[0]);
+    return ok(c, await refreshCreator(c.env, c.req.param("id"), existing[0].username));
   } catch (e) {
     const message = e instanceof Error ? e.message : "Provider request failed";
-    const status = /rate limited/i.test(message) ? 429 : /not found/i.test(message) ? 404 : 502;
-    await db(c.env).query("UPDATE hof_tiktok_creators SET provider_status=$2,provider_message=$3,updated_at=now() WHERE id=$1", [c.req.param("id"), status === 429 ? "rate_limited" : status === 404 ? "not_found" : "error", message.slice(0, 300)]).catch(() => []);
+    const status = /IDENTITY_MISMATCH/.test(message) ? 502 : /rate limited/i.test(message) ? 429 : /not found/i.test(message) ? 404 : 502;
     return fail(c, status, "TIKTOK_REFRESH_FAILED", message);
   }
 });
-
 creatorAdmin.patch("/:id", requirePermission("creator.manage"), async c => {
   const b = await c.req.json().catch(() => null);
   const p = z.object({ displayName: z.string().trim().min(1).max(160).nullable().optional(), notes: z.string().max(1000).nullable().optional(), status: z.enum(["active","paused","blocked"]).optional() }).safeParse(b);
