@@ -52,5 +52,6 @@ describe("leaderboard metrics", () => {
     expect(parseMetric("followers_sideways")).toBeNull();
     expect(parseMetric("password")).toBeNull();
   });
-  it("lists 12 metrics", () => expect(allMetrics()).toHaveLength(12));
+  it("parses the combined change metric", () => expect(parseMetric("followers_change")).toEqual({ base: "followers", kind: "change" }));
+  it("lists 15 metrics", () => expect(allMetrics()).toHaveLength(15));
 });
