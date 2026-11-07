@@ -428,6 +428,28 @@ const SECTIONS = {
     main().replaceChildren(section("Discover submissions (pending)", h("button", { onclick: load }, "Reload")), body); load();
   },
 
+  Leaderboard: async () => {
+    const st = { metric: "followers", window: "7d", limit: 50, offset: 0, strict: false };
+    const body = h("div");
+    const metrics = ["followers", "followers_gain", "followers_loss", "followers_growth", "likes", "likes_gain", "likes_loss", "likes_growth", "videos", "videos_gain", "videos_loss", "videos_growth"];
+    const load = async () => {
+      const q = new URLSearchParams({ metric: st.metric, window: st.window, limit: st.limit, offset: st.offset });
+      if (st.strict) q.set("strict", "true");
+      const r = await run(() => api("GET", "/api/leaderboard?" + q)); if (!r) return;
+      const growth = st.metric.includes("_");
+      const cols = growth
+        ? ["rankLabel", "username", "displayName", "value", "previous", "current", "change", "growthPct", "partialWindow", "baselineAt"]
+        : ["rankLabel", "username", "displayName", "value", "lastSyncedAt"];
+      body.replaceChildren(h("div", { class: "empty" }, `${r.meta.total} ranked · ${st.metric}${growth ? " · " + st.window : ""}`), table(r.data, cols));
+    };
+    main().replaceChildren(section("Leaderboard",
+      h("select", { style: "width:auto", onchange: e => { st.metric = e.target.value; st.offset = 0; load(); } }, metrics.map(m => h("option", { value: m }, m))),
+      h("select", { style: "width:auto", onchange: e => { st.window = e.target.value; st.offset = 0; load(); } }, ["24h", "7d", "30d"].map(w => h("option", { value: w, selected: w === st.window }, w))),
+      h("label", {}, h("input", { type: "checkbox", onchange: e => { st.strict = e.target.checked; load(); } }), " full window only"),
+      pager(st, load), h("button", { onclick: load }, "Reload")), body);
+    load();
+  },
+
   "Creator requests": async () => {
     await loadRefs();
     const load = async () => {
