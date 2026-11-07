@@ -83,7 +83,7 @@ async function cacheCover(env: Env, coverUrl: string, videoId: string): Promise<
   const url = safeCoverUrl(coverUrl);
   if (!url) return null;
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "error" });
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
     if (!response.ok) return null;
     const mimeType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     const allowedTypes: Record<string, string> = {
@@ -127,7 +127,7 @@ async function pullPosts(env: Env, account: SocialAccount) {
   url.searchParams.set("handle", account.username.replace(/^@/, ""));
   const headers = new Headers({ Accept: "application/json" });
   if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(25_000), redirect: "error" });
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(25_000), redirect: "manual" });
   if (response.status === 429) throw new Error("TikTok posts provider is rate limited");
   if (!response.ok) throw new Error(`TikTok posts provider returned ${response.status}`);
   const raw = await response.json() as any;
@@ -242,7 +242,7 @@ async function batchProfiles(env: Env, accounts: SocialAccount[]): Promise<Map<s
     if (env.TIKTOK_SCRAPER_API_KEY) headers.set("Authorization", `Bearer ${env.TIKTOK_SCRAPER_API_KEY}`);
     const response = await fetch(url, {
       method: "POST", headers, body: JSON.stringify({ handles: accounts.map(account => account.username) }),
-      signal: AbortSignal.timeout(20_000), redirect: "error"
+      signal: AbortSignal.timeout(20_000), redirect: "manual"
     });
     if (!response.ok) return result;
     const payload = await response.json() as any;
