@@ -3,6 +3,8 @@ export interface Env {
   DATABASE_URL: string;
   TIKTOK_SCRAPER_BASE_URL?: string;
   TIKTOK_SCRAPER_API_KEY?: string;
+  /** Service binding to the scraper Worker. Required for Worker-to-Worker calls on workers.dev (public fetch returns error 1042). */
+  TIKTOK_SCRAPER?: { fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> };
   ADMIN_API_KEY?: string;
   RATE_LIMIT_ENABLED?: string;
   CORS_ORIGINS?: string;
