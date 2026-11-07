@@ -1,6 +1,6 @@
 {
   "name": "hof-api",
-  "version": "1.2.2",
+  "version": "1.2.11",
   "private": true,
   "type": "module",
   "scripts": {
