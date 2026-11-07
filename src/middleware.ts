@@ -29,6 +29,10 @@ export const basicRateLimit: MiddlewareHandler<HonoEnv> = async (c, next) => {
   const key = `${c.req.method}:${new URL(c.req.url).pathname}:${c.req.header("cf-connecting-ip") || "unknown"}`;
   const store = (globalThis as unknown as { __hofRate?: Map<string, { n: number; t: number }> }).__hofRate ||= new Map();
   const now = Date.now();
+  if (store.size > 5000) {
+    for (const [entryKey, entry] of store) if (now - entry.t > 60_000) store.delete(entryKey);
+    if (store.size > 5000) store.clear();
+  }
   const item = store.get(key);
   if (!item || now - item.t > 60_000) store.set(key, { n: 1, t: now });
   else if (++item.n > 120) return fail(c, 429, "RATE_LIMITED", "Too many requests. Try again shortly.");
@@ -43,7 +47,7 @@ export const restrictedCors: MiddlewareHandler<HonoEnv> = async (c, next) => {
     c.header("Access-Control-Allow-Origin", origin);
     c.header("Vary", "Origin");
     c.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
-    c.header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, X-HOF-Visitor");
+    c.header("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, X-API-Key, X-HOF-Visitor");
     c.header("Access-Control-Max-Age", "600");
   }
   if (c.req.method === "OPTIONS") return c.body(null, origin && allowed.includes(origin) ? 204 : 403);
