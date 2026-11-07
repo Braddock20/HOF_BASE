@@ -1,0 +1,37 @@
+--- a/src/collector.ts	2026-11-07 22:11:43.000000000 +0000
++++ b/src/collector.ts	2026-11-07 22:33:39.071094666 +0000
+@@ -139,8 +139,21 @@
+   // The scraper answers HTTP 200 with videos:[] plus a warning when TikTok blocks it,
+   // so treat that as a failure and let the job retry instead of marking it done.
+   if (videos.length === 0) {
++    // The scraper now reports *why* there are no videos. Distinguishing the
++    // cases avoids burning three retries on accounts that will never work.
++    const providerStatus = String(raw?.status ?? root?.status ?? "").toLowerCase();
+     const warning = typeof raw?.warning === "string" ? raw.warning : (typeof root?.warning === "string" ? root.warning : "");
++    if (providerStatus === "not_found" || providerStatus === "restricted") {
++      throw new Error(`permanent: TikTok account is ${providerStatus}${warning ? ` (${warning})` : ""}`.slice(0, 300));
++    }
++    if (providerStatus === "rate_limited") {
++      throw new Error(`retryable: TikTok rate limited the posts provider${warning ? ` (${warning})` : ""}`.slice(0, 300));
++    }
+     const expected = nonNegativeInteger(account.oldVideoCount);
++    if (providerStatus === "empty" && (expected === null || expected === 0)) {
++      // The account genuinely lists no public posts. That is a success.
++      return { inserted: 0, updated: 0, skipped: 0, snapshots: 0, received: 0 };
++    }
+     if (warning || (expected !== null && expected > 0)) {
+       throw new Error(`TikTok posts provider returned no videos${warning ? `: ${warning}` : ` (profile reports ${expected})`}`.slice(0, 300));
+     }
+@@ -339,8 +352,10 @@
+       failedThisRound = true;
+       const summary = error instanceof Error ? error.message : "TikTok collection failed";
+       failureSummary = summary;
+-      await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
+-        finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
++      // A permanently blocked account should not be retried three times.
++      const permanent = /permanent:/i.test(summary);
++      await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN $3 THEN 'failed' WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
++        finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300), permanent]);
+     }
+     results.push(postsResult);
+     // One unreadable account must not block healthy ones: keep going unless TikTok/the scraper is rate limiting us.
