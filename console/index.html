@@ -241,6 +241,7 @@ const SECTIONS = {
         if (v) { await run(() => api("POST", "/api/admin/tiktok-creators", v), "Creator added"); load(); } } }, "+ Add creator"),
       h("select", { style: "width:auto", onchange: e => { st.status = e.target.value; st.offset = 0; load(); } },
         ["", "active", "paused", "blocked"].map(s => h("option", { value: s }, s || "all statuses"))),
+      h("button", { onclick: async () => { const r = await run(() => api("POST", "/api/admin/tiktok-creators/link-all")); if (r) toast(`Published ${r.data.linked} of ${r.data.candidates} creators to the Hall of Fame`, "good"); } }, "Publish to Hall of Fame"),
       h("button", { onclick: async () => {
         const r = await run(() => api("GET", "/api/admin/tiktok-creators?limit=100&status=active")); if (!r) return;
         const due = r.data.filter(c => !c.lastSyncedAt || c.providerStatus !== "ok");
