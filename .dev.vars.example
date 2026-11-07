@@ -4,7 +4,7 @@ DATABASE_URL=postgresql://USER:PASSWORD@HOST/DATABASE?sslmode=require
 # Generate at least 32 random bytes. Never commit the real key.
 ADMIN_API_KEY=replace-with-a-long-random-secret-at-least-32-characters
 
-TIKTOK_SCRAPER_BASE_URL=https://YOUR-SCRAPER-WORKER.workers.dev
+TIKTOK_SCRAPER_BASE_URL=https://hof.talesapi.workers.dev
 TIKTOK_SCRAPER_API_KEY=
 
 RATE_LIMIT_ENABLED=true
@@ -14,7 +14,7 @@ LOG_LEVEL=debug
 TIKTOK_PROFILE_PATH=/api/profile
 TIKTOK_POSTS_PATH=/api/profile/posts
 TIKTOK_BATCH_PROFILE_PATH=
-TIKTOK_SYNC_BATCH_SIZE=30
+TIKTOK_SYNC_BATCH_SIZE=10
 TIKTOK_SYNC_ENABLED=false
 
 # Backblaze B2 private bucket credentials (Cloudflare Worker secrets).
@@ -23,4 +23,5 @@ B2_APPLICATION_KEY_ID=
 B2_APPLICATION_KEY=
 B2_BUCKET_ID=
 B2_BUCKET_NAME=
-\n# Comma-separated exact frontend origins; do not use * in production.\nCORS_ORIGINS=https://your-hof-frontend.example\n
+# Comma-separated exact frontend origins; set after the frontend domain is known.
+CORS_ORIGINS=
