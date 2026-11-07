@@ -195,3 +195,16 @@ Award creation and winner publication require an audit reason. Public voting is 
 The ZIP includes `wrangler.toml`, `.env.example`, and `.dev.vars.example`. The scraper base URL and endpoint paths are ordinary configuration; Neon, admin key, scraper API key (if used), and B2 credentials remain Cloudflare secrets. Never place real secrets in Wrangler `[vars]`, `.env.example`, or source control.
 
 Run `npm run db:migrate` after backing up the database. The migration runner now applies `0001_initial`, `0002_discover`, and `0003_creator_manager_awards` in order. `TIKTOK_SYNC_ENABLED` remains `false` in all Wrangler environments.
+
+
+## Leaderboard (v1.2.11)
+
+Public, read-only ranking of accounts with `#1, #2, #3…` labels, computed in SQL from the stored metric snapshots.
+
+- `GET /api/leaderboard/metrics` lists the options.
+- `GET /api/leaderboard?metric=followers&limit=20&offset=0`
+
+Metrics: `followers`, `likes`, `videos` (current value, highest first) and, for each, `_gain` (biggest increase), `_loss` (biggest drop, largest loss first) and `_growth` (percentage increase; accounts with a baseline below `minBase`, default 100, are excluded).
+Other params: `window=24h|7d|30d` (default 7d, growth metrics only), `platform=tiktok|instagram|youtube` (default tiktok), `strict=true` (exclude accounts whose history is shorter than the window), `limit` (1-100), `offset`.
+
+Each row has `rank`, `rankLabel` (`"#1"`), `username`, `displayName`, `profileSlug`, `value`, `current`, and for growth metrics `previous`, `change`, `growthPct`, `partialWindow`, `baselineAt`. Ties share a rank. History starts when snapshots start being collected, so growth lists fill in over the first day(s); accounts with no usable history are left out rather than shown as 0.
