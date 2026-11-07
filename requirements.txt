@@ -1,0 +1,6 @@
+# Core scraping only needs the standard library.
+# These extras are for browser mode and analysis.
+
+playwright>=1.40      # browser automation for hashtag/profile collection
+pandas>=2.0           # analysis
+matplotlib>=3.7       # charts
