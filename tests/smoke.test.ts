@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { boolish, slugify } from "../src/http";
 import { normalizeTikTok } from "../src/tiktok";
+import { parseMetric, allMetrics } from "../src/leaderboard";
 
 describe("HOF normalization", () => {
   it("normalizes slugs", () => expect(slugify("Campus Icon!")).toBe("campus-icon"));
@@ -37,4 +38,19 @@ describe("HOF normalization", () => {
     expect(item.metricsAvailability.likes).toBe("unavailable");
     expect(item.platformVerified).toBe(false);
   });
+});
+
+describe("leaderboard metrics", () => {
+  it("parses totals and growth metrics", () => {
+    expect(parseMetric("followers")).toEqual({ base: "followers", kind: "total" });
+    expect(parseMetric("likes_gain")).toEqual({ base: "likes", kind: "gain" });
+    expect(parseMetric("followers_loss")).toEqual({ base: "followers", kind: "loss" });
+    expect(parseMetric("videos_growth")).toEqual({ base: "videos", kind: "growth" });
+  });
+  it("rejects unknown or injected metrics", () => {
+    expect(parseMetric("followers; DROP TABLE x")).toBeNull();
+    expect(parseMetric("followers_sideways")).toBeNull();
+    expect(parseMetric("password")).toBeNull();
+  });
+  it("lists 12 metrics", () => expect(allMetrics()).toHaveLength(12));
 });
