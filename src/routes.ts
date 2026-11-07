@@ -24,14 +24,15 @@ api.get("/health/db", async c => {
     return fail(c, 503, "DATABASE_UNAVAILABLE", "Database connectivity check failed.");
   }
 });
-api.get("/health/tiktok", async c => {
-  if (!c.env.TIKTOK_SCRAPER_BASE_URL) return ok(c, { configured: false, healthy: false });
-  try {
-    const r = await fetch(`${c.env.TIKTOK_SCRAPER_BASE_URL.replace(/\/+$/, "")}/api/health`, { signal: AbortSignal.timeout(8000) });
-    return ok(c, { configured: true, healthy: r.ok, status: r.status });
-  } catch { return ok(c, { configured: true, healthy: false }); }
-});
-api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.0", build: "independent-tiktok-creators-awards-discover-private-b2" }));
+api.get("/health/tiktok", c => ok(c, {
+  configured: Boolean(c.env.TIKTOK_SCRAPER_BASE_URL),
+  profilePathConfigured: Boolean(c.env.TIKTOK_PROFILE_PATH || "/api/profile"),
+  postsPathConfigured: Boolean(c.env.TIKTOK_POSTS_PATH),
+  syncEnabled: c.env.TIKTOK_SYNC_ENABLED === "true",
+  probe: "deferred-until-profile-refresh",
+  note: "The scraper does not expose a dedicated /api/health route; use a creator refresh to verify live connectivity."
+}));
+api.get("/version", c => ok(c, { name: "hof-api", version: "1.2.2", build: "tiktok-refresh-resilience-cors-hardening" }));
 api.route("/discover", discoverRoutes);
 api.route("/media", mediaRoutes);
 api.route("/admin/discover", discoverAdmin);
