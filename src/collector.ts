@@ -157,7 +157,10 @@ async function pullPosts(env: Env, account: SocialAccount) {
     const authorIdValue = first(video, ["author_id", "author_user_id", "author_uid"]);
     const authorId = authorIdValue === null ? null : String(authorIdValue);
     const expectedHandle = normalizedHandle(account.username);
-    if ((!authorHandle || authorHandle !== expectedHandle) && (!authorId || !account.platformUserId || authorId !== account.platformUserId)) {
+    const authorMatches = (authorHandle && authorHandle === expectedHandle) || (authorId && account.platformUserId && authorId === account.platformUserId);
+    const authorPresent = Boolean(authorHandle || authorId);
+    // The request was for this one handle, so a video with no author fields is accepted; a video naming another author is not.
+    if (authorPresent && !authorMatches) {
       skipped++;
       continue;
     }
@@ -340,33 +343,42 @@ export async function runScheduledCollection(env: Env) {
     }
   }
 
-  // Atomic claim: the UPDATE and row lock happen in one database statement.
-  const picked = await q.query<{ id: string; socialAccountId: string }>(`WITH next_job AS (
-      SELECT id FROM hof_sync_jobs
-      WHERE platform='tiktok' AND status='queued'
-      ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1
-    )
-    UPDATE hof_sync_jobs j SET status='running',attempts=attempts+1,started_at=now(),finished_at=NULL
-    FROM next_job WHERE j.id=next_job.id
-    RETURNING j.id,j.social_account_id AS "socialAccountId"`);
+  const postsResults: unknown[] = [];
+  for (let n = 0; n < 3; n++) {
+    // Atomic claim: the UPDATE and row lock happen in one database statement.
+    const picked = await q.query<{ id: string; socialAccountId: string }>(`WITH next_job AS (
+        SELECT id FROM hof_sync_jobs
+        WHERE platform='tiktok' AND status='queued'
+        ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1
+      )
+      UPDATE hof_sync_jobs j SET status='running',attempts=attempts+1,started_at=now(),finished_at=NULL
+      FROM next_job WHERE j.id=next_job.id
+      RETURNING j.id,j.social_account_id AS "socialAccountId"`);
 
-  let postsResult: unknown = "none";
-  if (picked.length) {
-    const job = picked[0];
-    try {
-      const rows = await q.query<SocialAccount>(`SELECT id,username,platform_user_id AS "platformUserId",
-          display_name AS "displayName",video_count AS "oldVideoCount",NULL::timestamptz AS "lastPostSyncAt"
-        FROM hof_social_accounts WHERE id=$1 AND platform='tiktok'`, [job.socialAccountId]);
-      if (!rows.length) throw new Error("Social account no longer exists");
-      postsResult = await pullPosts(env, rows[0]);
-      await q.query("UPDATE hof_sync_jobs SET status='succeeded',finished_at=now(),error_summary=NULL WHERE id=$1", [job.id]);
-    } catch (error) {
-      const summary = error instanceof Error ? error.message : "TikTok collection failed";
-      await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
-        finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
+    let postsResult: unknown = "none";
+    let failedThisRound = false;
+    if (picked.length) {
+      const job = picked[0];
+      try {
+        const rows = await q.query<SocialAccount>(`SELECT id,username,platform_user_id AS "platformUserId",
+            display_name AS "displayName",video_count AS "oldVideoCount",NULL::timestamptz AS "lastPostSyncAt"
+          FROM hof_social_accounts WHERE id=$1 AND platform='tiktok'`, [job.socialAccountId]);
+        if (!rows.length) throw new Error("Social account no longer exists");
+        postsResult = await pullPosts(env, rows[0]);
+        await q.query("UPDATE hof_sync_jobs SET status='succeeded',finished_at=now(),error_summary=NULL WHERE id=$1", [job.id]);
+      } catch (error) {
+        failedThisRound = true;
+        const summary = error instanceof Error ? error.message : "TikTok collection failed";
+        await q.query(`UPDATE hof_sync_jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,
+          finished_at=now(),error_summary=$2 WHERE id=$1`, [job.id, summary.slice(0, 300)]);
+      }
     }
+    if (!picked.length) break;
+    postsResults.push(postsResult);
+    if (failedThisRound) break;
   }
+  const allPosts: unknown = postsResults.length ? postsResults : "none";
   let creators: unknown = null;
   try { creators = await refreshDueCreators(env, 5); } catch { creators = "error"; }
-  return { metadataChecked: checked, metadataErrors, queued, slowPostPull: postsResult, creators };
+  return { metadataChecked: checked, metadataErrors, queued, slowPostPull: allPosts, creators };
 }
