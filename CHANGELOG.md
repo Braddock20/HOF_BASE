@@ -6,6 +6,7 @@
 - New backfill rule: if the profile reports videos but none are stored for the creator, a `missing-videos` job is queued regardless of the 24h reconciliation timer.
 - An empty posts response now fails the job (and retries) when the scraper sent a warning or the profile reports videos, instead of being recorded as succeeded.
 - After 3 failed attempts an account is not re-queued for 6 hours.
+- Added `GET /api/leaderboard` (+ `/metrics`): rankings by followers, likes, videos, gains, losses and growth % with `#n` labels, plus an admin console tab. No migration required.
 - Extracted `processQueuedJobs` from the scheduled collector. No database migration required.
 
 ## 1.2.2 — TikTok integration and resilience hardening
